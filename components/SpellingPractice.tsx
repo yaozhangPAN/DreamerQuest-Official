@@ -1,0 +1,552 @@
+
+import React, { useState, useRef, useEffect } from 'react';
+import { Camera, Volume2, SkipForward, RotateCcw, Send, CheckCircle2, Loader2, List, PenTool, ArrowLeft, X, Plus, ChevronLeft } from 'lucide-react';
+import { extractSpellingList, generateSpellingAudio, evaluateSpellingAnswers } from '../geminiService';
+import { SpellingSession } from '../types';
+
+interface SpellingPracticeProps {
+  onXpEarned: (count: number) => void;
+  onDone: () => void;
+  activeSession: SpellingSession | null;
+  onSaveSession: (session: SpellingSession | null) => void;
+}
+
+// Utility to decode base64 into bytes
+function decodeBase64(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// Fixed decoding logic for raw PCM 16-bit audio
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
+const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone, activeSession, onSaveSession }) => {
+  const [step, setStep] = useState<'UPLOAD_LIST' | 'PRACTICE' | 'UPLOAD_ANSWERS' | 'RESULT'>(activeSession ? 'PRACTICE' : 'UPLOAD_LIST');
+  const [sessionData, setSessionData] = useState<SpellingSession | null>(activeSession);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
+  
+  const [listImages, setListImages] = useState<string[]>([]);
+  const [answerImages, setAnswerImages] = useState<string[]>([]);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  
+  const [result, setResult] = useState<{
+    correctWords: string[];
+    incorrectWords: { original: string; student: string }[];
+    feedback: string;
+  } | null>(null);
+
+  const listInputRef = useRef<HTMLInputElement>(null);
+  const answerInputRef = useRef<HTMLInputElement>(null);
+
+  // Initialize AudioContext on first interaction
+  const initAudio = () => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume();
+    }
+    return audioContextRef.current;
+  };
+
+  const stopAudio = () => {
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.stop();
+      } catch (e) {}
+      currentSourceRef.current = null;
+    }
+    setIsPlaying(false);
+  };
+
+  // Handle Audio Generation and Playback
+  const playWord = async (word: string) => {
+    stopAudio();
+    const ctx = initAudio();
+    setIsPlaying(true);
+    
+
+    try {
+      const base64 = await generateSpellingAudio(word);
+      if (base64 === '__BROWSER_TTS__') {
+        setIsPlaying(true);
+        const synth = window.speechSynthesis;
+        const utterance = new SpeechSynthesisUtterance(word);
+        const isChinese = /[\u4e00-\u9fa5]/.test(word);
+        if (isChinese) {
+            utterance.lang = 'zh-CN';
+            const voices = synth.getVoices();
+            const zhVoice = voices.find(v => v.lang.includes('zh'));
+            if (zhVoice) utterance.voice = zhVoice;
+        } else {
+            utterance.lang = 'en-US';
+        }
+        utterance.onend = () => setIsPlaying(false);
+        utterance.onerror = (e) => {
+            console.error("Speech Synthesis Error", e);
+            setIsPlaying(false);
+            alert("Could not play audio. Please check device volume and browser support.");
+        };
+        synth.cancel();
+        synth.speak(utterance);
+        return;
+      }
+      
+      const audioBytes = decodeBase64(base64);
+
+      const audioBuffer = await decodeAudioData(audioBytes, ctx, 24000, 1);
+      
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.onended = () => setIsPlaying(false);
+      currentSourceRef.current = source;
+      source.start();
+    } catch (err: any) {
+      console.error("Playback error:", err);
+      setIsPlaying(false);
+    }
+  };
+
+  // Auto-play effect
+  useEffect(() => {
+    if (step === 'PRACTICE' && sessionData) {
+      const currentWords = sessionData.sessions[sessionData.currentSessionIndex];
+      if (currentWords && currentWords[currentIndex]) {
+        // Delay slightly to allow transition
+        const timer = setTimeout(() => {
+          playWord(currentWords[currentIndex]);
+        }, 600);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [currentIndex, step, sessionData?.currentSessionIndex]);
+
+  const processUploadedFile = async (file: File): Promise<string> => {
+    if (file.name.endsWith('.docx') || file.name.endsWith('.doc')) {
+      const mammoth = (await import('mammoth')).default;
+      const arrayBuffer = await file.arrayBuffer();
+      try {
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        return 'text:' + result.value;
+      } catch (err) {
+        console.error("Mammoth text extraction error:", err);
+        throw new Error("Failed to read Word document.");
+      }
+    } else {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (reader.result) {
+            resolve(reader.result as string);
+          } else {
+            reject(new Error("Failed to read file"));
+          }
+        };
+        reader.onerror = () => reject(new Error("File read error"));
+        reader.readAsDataURL(file);
+      });
+    }
+  };
+
+  const handleListPhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) {
+      for (const file of files) {
+        try {
+          const processed = await processUploadedFile(file);
+          setListImages(prev => [...prev, processed]);
+        } catch (err) {
+          alert(`Failed to load file: ${file.name}`);
+        }
+      }
+    }
+    e.target.value = '';
+  };
+
+  const removeListImage = (index: number) => {
+    setListImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const processList = async () => {
+    if (listImages.length === 0) return;
+    setIsProcessing(true);
+    try {
+      const extracted = await extractSpellingList(listImages);
+      if (extracted.length === 0) throw new Error("No words found");
+      
+      // Session splitting logic:
+      // Chunks of 20. 
+      // If remainder >= 10, new session.
+      // If remainder < 10, merge into last session.
+      const sessions: string[][] = [];
+      const chunkSize = 20;
+      
+      for (let i = 0; i < extracted.length; i += chunkSize) {
+        sessions.push(extracted.slice(i, i + chunkSize));
+      }
+
+      if (sessions.length > 1) {
+        const last = sessions[sessions.length - 1];
+        if (last.length < 10) {
+          const popped = sessions.pop()!;
+          sessions[sessions.length - 1] = [...sessions[sessions.length - 1], ...popped];
+        }
+      }
+
+      const newSession: SpellingSession = {
+        allWords: extracted,
+        listImages: listImages,
+        sessions: sessions,
+        currentSessionIndex: 0
+      };
+
+      setSessionData(newSession);
+      onSaveSession(newSession);
+      setStep('PRACTICE');
+    } catch (err) {
+      alert("Couldn't read the spelling list. Try clearer photos!");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleNextWord = () => {
+    const currentSessionWords = sessionData!.sessions[sessionData!.currentSessionIndex];
+    if (currentIndex < currentSessionWords.length - 1) {
+      setCurrentIndex(prev => prev + 1);
+    } else {
+      setStep('UPLOAD_ANSWERS');
+    }
+  };
+
+  const handlePrevWord = () => {
+    if (currentIndex > 0) {
+      setCurrentIndex(prev => prev - 1);
+    }
+  };
+
+  const handleAnswerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) {
+      for (const file of files) {
+        try {
+          const processed = await processUploadedFile(file);
+          setAnswerImages(prev => [...prev, processed]);
+        } catch (err) {
+          alert(`Failed to load file: ${file.name}`);
+        }
+      }
+    }
+    e.target.value = '';
+  };
+
+  const removeAnswerImage = (index: number) => {
+    setAnswerImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const submitAnswers = async () => {
+    if (answerImages.length === 0 || !sessionData) return;
+    setIsProcessing(true);
+    try {
+      const currentWords = sessionData.sessions[sessionData.currentSessionIndex];
+      
+      const evalResult = await evaluateSpellingAnswers(
+        sessionData.listImages,
+        answerImages,
+        currentWords
+      );
+      setResult(evalResult);
+      onXpEarned(evalResult.correctWords.length);
+      
+      const updatedSession = { 
+        ...sessionData, 
+        currentSessionIndex: sessionData.currentSessionIndex + 1 
+      };
+      
+      if (updatedSession.currentSessionIndex >= updatedSession.sessions.length) {
+        onSaveSession(null); // Finished all sessions
+      } else {
+        onSaveSession(updatedSession);
+      }
+      
+      setSessionData(updatedSession);
+      setStep('RESULT');
+      setAnswerImages([]); // Clear for next session
+    } catch (err) {
+      alert("Error checking answers. Please try again.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in duration-500">
+      {/* Step 1: Upload List(s) */}
+      {step === 'UPLOAD_LIST' && (
+        <div className="text-center space-y-6">
+          <div className="bg-emerald-100 w-20 h-20 rounded-3xl flex items-center justify-center mx-auto text-emerald-600">
+            <List size={40} />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-3xl font-black text-slate-800">Spelling Prep</h2>
+            <p className="text-slate-500">Snap photos of your spelling list. We'll split it into sessions of 20!</p>
+          </div>
+          
+          <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              {listImages.map((img, i) => {
+                const isPdf = img.startsWith('data:application/pdf');
+                const isText = img.startsWith('text:');
+                return (
+                  <div key={i} className="relative aspect-[3/4] rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 group flex items-center justify-center p-2">
+                    {isText ? (
+                      <div className="flex flex-col items-center justify-center w-full h-full p-2 bg-indigo-50 rounded-xl text-center">
+                        <List size={24} className="text-indigo-400 mb-2" />
+                        <span className="text-[10px] font-black text-indigo-600 uppercase">Word Document</span>
+                      </div>
+                    ) : isPdf ? (
+                      <div className="flex flex-col items-center justify-center w-full h-full p-2 bg-rose-50 rounded-xl text-center">
+                        <List size={24} className="text-rose-400 mb-2" />
+                        <span className="text-[10px] font-black text-rose-600 uppercase">PDF Document</span>
+                      </div>
+                    ) : (
+                      <img src={img.startsWith('data:') ? img : `data:image/jpeg;base64,${img}`} alt={`List ${i+1}`} className="w-full h-full object-cover rounded-xl" />
+                    )}
+                    <button 
+                      onClick={() => removeListImage(i)}
+                      className="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                );
+              })}
+              
+              <button 
+                onClick={() => listInputRef.current?.click()}
+                className="aspect-[3/4] border-4 border-dashed border-slate-100 rounded-2xl flex flex-col items-center justify-center text-slate-400 hover:border-emerald-200 hover:bg-emerald-50/30 transition-all group"
+              >
+                <Plus size={32} className="group-hover:scale-110 transition-transform" />
+                <span className="text-xs font-black mt-2">ADD PHOTO</span>
+              </button>
+            </div>
+
+            <input type="file" ref={listInputRef} className="hidden" accept="image/*,application/pdf,.doc,.docx" onChange={handleListPhotoChange} multiple />
+
+            <button 
+              disabled={listImages.length === 0 || isProcessing}
+              onClick={processList}
+              className={`w-full py-5 rounded-2xl font-black text-lg shadow-xl transition-all flex items-center justify-center gap-3
+                ${listImages.length === 0 || isProcessing ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-100'}
+              `}
+            >
+              {isProcessing ? (
+                <><Loader2 className="animate-spin" size={20} /> Analyzing Photos...</>
+              ) : (
+                <><Send size={20} /> Start Practice Session</>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Practice Session */}
+      {step === 'PRACTICE' && sessionData && (
+        <div className="space-y-8 animate-in slide-in-from-bottom duration-500">
+          <div className="flex justify-between items-center">
+            <button onClick={onDone} className="text-slate-400 hover:text-slate-600 font-bold flex items-center gap-2">
+              <ArrowLeft size={20} /> QUIT
+            </button>
+            <div className="flex flex-col items-end">
+              <div className="bg-indigo-100 px-4 py-1.5 rounded-full text-indigo-700 font-black text-sm mb-1">
+                SESSION {sessionData.currentSessionIndex + 1} OF {sessionData.sessions.length}
+              </div>
+              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                WORD {currentIndex + 1} OF {sessionData.sessions[sessionData.currentSessionIndex].length}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-16 rounded-[40px] border border-slate-200 shadow-xl text-center space-y-10">
+            <div 
+              className={`w-36 h-36 rounded-full flex items-center justify-center mx-auto shadow-lg transition-all duration-300
+              ${isPlaying ? 'bg-emerald-500 shadow-emerald-200 scale-110 animate-pulse' : 'bg-indigo-600 shadow-indigo-200'}`}
+            >
+              <Volume2 size={80} className="text-white" />
+            </div>
+            
+            <div className="space-y-2">
+              <h3 className="text-3xl font-black text-slate-800">Listen Carefully</h3>
+              <p className="text-slate-500 font-medium italic text-lg">Write it down on your paper...</p>
+            </div>
+
+            <button 
+              onClick={() => playWord(sessionData.sessions[sessionData.currentSessionIndex][currentIndex])}
+              className="text-indigo-600 font-black hover:text-indigo-700 flex items-center justify-center gap-2 mx-auto transition-colors"
+            >
+              <RotateCcw size={20} /> REPLAY AUDIO
+            </button>
+          </div>
+
+          <div className="flex gap-4">
+            <button 
+              onClick={handlePrevWord}
+              disabled={currentIndex === 0}
+              className="w-1/3 py-6 rounded-3xl font-black text-xl transition-all border-2 border-slate-200 text-slate-400 disabled:opacity-30 enabled:hover:bg-slate-50 enabled:hover:text-slate-600 enabled:border-slate-300 flex items-center justify-center gap-2"
+            >
+              <ChevronLeft size={24} /> BACK
+            </button>
+            
+            <button 
+              onClick={handleNextWord}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-3xl font-black text-xl shadow-lg shadow-emerald-100 transition-all flex items-center justify-center gap-3"
+            >
+              {currentIndex === sessionData.sessions[sessionData.currentSessionIndex].length - 1 ? "I'M FINISHED!" : "NEXT WORD"}
+              <SkipForward size={24} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Upload Answers */}
+      {step === 'UPLOAD_ANSWERS' && (
+        <div className="text-center space-y-6">
+          <div className="bg-indigo-100 w-20 h-20 rounded-3xl flex items-center justify-center mx-auto text-indigo-600">
+            <PenTool size={40} />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-3xl font-black text-slate-800">Session Complete!</h2>
+            <p className="text-slate-500">Upload a photo of your session {sessionData?.currentSessionIndex! + 1} answers.</p>
+          </div>
+          <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+            <div className="flex justify-between items-end">
+              <div>
+                <h3 className="font-bold text-slate-800 text-lg mb-1">Your Handwritten Answers</h3>
+                <p className="text-slate-500 text-sm">Upload images of your handwritten spelling test</p>
+              </div>
+              {answerImages.length > 0 && (
+                <button 
+                  onClick={submitAnswers}
+                  disabled={isProcessing}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white px-6 py-2 rounded-xl font-bold transition-colors flex items-center gap-2"
+                >
+                  {isProcessing ? <><Loader2 size={18} className="animate-spin" /> Marking...</> : <><CheckCircle2 size={18} /> Submit Answers</>}
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              {answerImages.map((data, idx) => (
+                <div key={idx} className="relative aspect-square rounded-2xl border-2 border-slate-100 overflow-hidden group bg-slate-50 flex items-center justify-center">
+                  <img src={data} alt={`Answer ${idx + 1}`} className="w-full h-full object-cover" />
+                  <button 
+                    onClick={() => removeAnswerImage(idx)}
+                    className="absolute top-2 right-2 bg-white/90 backdrop-blur p-1.5 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity hover:bg-rose-50 text-rose-500"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              ))}
+              
+              <button 
+                onClick={() => answerInputRef.current?.click()}
+                className="aspect-square rounded-2xl border-2 border-dashed border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/50 flex flex-col items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors gap-2"
+              >
+                <Plus size={32} />
+                <span className="font-medium text-sm">Add Page</span>
+              </button>
+              <input type="file" ref={answerInputRef} className="hidden" accept="image/*" capture="environment" multiple onChange={handleAnswerUpload} />
+            </div>
+          </div>
+          <button onClick={() => setStep('PRACTICE')} className="text-slate-400 font-bold hover:text-slate-600">
+            ← Wait, I need to check one word
+          </button>
+        </div>
+      )}
+
+      {/* Step 4: Result */}
+      {step === 'RESULT' && result && (
+        <div className="space-y-8 animate-in zoom-in duration-500">
+          <div className="text-center space-y-4">
+            <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto">
+              <CheckCircle2 size={48} />
+            </div>
+            <h2 className="text-4xl font-black text-slate-800">Session Marked!</h2>
+            <div className="text-6xl font-black text-emerald-600">+{result.correctWords.length * 5} XP</div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 space-y-4">
+              <h3 className="font-bold text-emerald-600 flex items-center gap-2">
+                <CheckCircle2 size={18} /> Correct Words
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {result.correctWords.map(w => (
+                  <span key={w} className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full font-bold text-sm">
+                    {w}
+                  </span>
+                ))}
+                {result.correctWords.length === 0 && <p className="text-slate-400 italic text-sm">Keep practicing!</p>}
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 space-y-4">
+              <h3 className="font-bold text-red-500 flex items-center gap-2">
+                <RotateCcw size={18} /> Needs Practice
+              </h3>
+              <div className="space-y-2">
+                {result.incorrectWords.map((w, i) => (
+                  <div key={i} className="flex justify-between text-sm items-center bg-red-50 p-2 rounded-xl">
+                    <span className="font-black text-red-700">{w.original}</span>
+                    <span className="text-slate-400">→</span>
+                    <span className="font-bold text-slate-500">{w.student || "(missing)"}</span>
+                  </div>
+                ))}
+                {result.incorrectWords.length === 0 && <p className="text-slate-400 italic text-sm">Perfect score!</p>}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 text-indigo-900 italic text-center font-medium">
+            "{result.feedback}"
+          </div>
+
+          <button 
+            onClick={onDone}
+            className="w-full bg-slate-800 hover:bg-slate-900 text-white font-black text-lg py-5 rounded-2xl transition-all"
+          >
+            {sessionData && sessionData.currentSessionIndex < sessionData.sessions.length ? "CONTINUE NEXT SESSION" : "BACK TO DASHBOARD"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default SpellingPractice;

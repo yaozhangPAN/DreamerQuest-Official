@@ -1,0 +1,9 @@
+{
+  "name": "DreamerQuest: Level Up Your Skill and Get Reward!",
+  "description": "A gamified educational platform where students upload essays for AI evaluation, earn XP, level up, and win prizes for improving their writing skills.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
