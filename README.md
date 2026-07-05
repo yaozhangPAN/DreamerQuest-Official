@@ -1,20 +1,76 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# DreamerQuest
 
-# Run and deploy your AI Studio app
+Full-stack oral / spelling / composition practice app (Vite + Express + Firebase + Gemini).
 
-This contains everything you need to run your app locally.
+View in AI Studio: https://ai.studio/apps/a8f120c7-0500-4cde-a1ea-833c59420a9c
 
-View your app in AI Studio: https://ai.studio/apps/a8f120c7-0500-4cde-a1ea-833c59420a9c
+## Prerequisites
 
-## Run Locally
+- Node.js 18+
+- A [Gemini API key](https://aistudio.google.com/apikey)
+- Firebase project config (for auth / Firestore)
 
-**Prerequisites:**  Node.js
+## Clone & local setup
 
+```bash
+git clone https://github.com/yaozhangPAN/DreamerQuest-Official.git
+cd DreamerQuest-Official
+npm install
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+After cloning, **two local config files are required**. They are gitignored and are **not** included in the repository.
+
+### 1. Environment variables — `.env.local`
+
+Copy the example file and fill in your secrets:
+
+```bash
+cp .env.example .env.local
+```
+
+Edit `.env.local` and set at minimum:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GEMINI_API_KEY` | Yes | Google Gemini API key (server-side AI) |
+| `FIREBASE_PROJECT_ID` | Yes | Firebase project ID |
+| `VITE_DEV_AUTH_BYPASS` | Local dev | Set to `true` to skip Google OAuth locally |
+
+Optional (payments, GitHub, production): see comments in `.env.example` for `STRIPE_*`, `GITHUB_*`, `APP_URL`.
+
+> **Never commit `.env.local`.** It is listed in `.gitignore`.
+
+### 2. Firebase client config — `firebase-applet-config.json`
+
+Copy the example and paste your Firebase web app settings:
+
+```bash
+cp firebase-applet-config.example.json firebase-applet-config.json
+```
+
+Edit `firebase-applet-config.json` with values from Firebase Console → **Project settings** → **Your apps** → Web app config (`projectId`, `appId`, `apiKey`, `authDomain`, etc.).
+
+> **Never commit `firebase-applet-config.json`.** Use `firebase-applet-config.example.json` as the template only.
+
+## Run locally
+
+```bash
+npm run dev
+```
+
+Open http://localhost:3000
+
+To load `.env.local` explicitly in your shell (if needed):
+
+```bash
+set -a && source .env.local && set +a && npm run dev
+```
+
+## Build for production
+
+```bash
+npm run build
+npm start
+```
+
+Ensure `.env.local` (or host environment variables) and `firebase-applet-config.json` exist on the server before starting.
