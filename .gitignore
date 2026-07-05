@@ -1,8 +1,79 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
-.env*
+# --- Secrets & environment (never commit) ---
+.env
+.env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+*credentials*.json
+*service-account*.json
+*serviceAccount*.json
+google-services.json
+GoogleService-Info.plist
+
+# Local overrides for Firebase / app config (copy from *.example.json)
+firebase-applet-config.json
+firebase-applet-config.local.json
+
+# --- Dependencies & build output ---
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# --- Logs & runtime ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+*.pid
+*.seed
+
+# --- Test & coverage ---
+coverage/
+.nyc_output/
+
+# --- IDE & editor ---
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Deploy / hosting ---
+.vercel/
+.netlify/
+.aws-sam/
+
+# --- Firebase local tooling ---
+.firebase/
+
+# --- AI / dev artifacts (no need to backup) ---
+migrated_prompt_history/
+.cursor/
+.agent-transcripts/
+
+# --- Misc local scratch ---
+tmp/
+temp/
+*.tmp
+.cache/
