@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Volume2, SkipForward, RotateCcw, Send, CheckCircle2, Loader2, List, PenTool, ArrowLeft, X, Plus, ChevronLeft } from 'lucide-react';
 import { extractSpellingList, generateSpellingAudio, evaluateSpellingAnswers } from '../geminiService';
-import { SpellingSession } from '../types';
+import { SpellingSession, Session } from '../types';
 
 interface SpellingPracticeProps {
   onXpEarned: (count: number) => void;
@@ -43,7 +43,10 @@ async function decodeAudioData(
 }
 
 const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone, activeSession, onSaveSession }) => {
-  const [step, setStep] = useState<'UPLOAD_LIST' | 'PRACTICE' | 'UPLOAD_ANSWERS' | 'RESULT'>(activeSession ? 'PRACTICE' : 'UPLOAD_LIST');
+  const [step, setStep] = useState<'UPLOAD_LIST' | 'READY_AUDIO' | 'PRACTICE' | 'UPLOAD_ANSWERS' | 'RESULT'>(activeSession ? 'READY_AUDIO' : 'UPLOAD_LIST');
+  const [ttsMode, setTtsMode] = useState<'AI' | 'BROWSER'>('BROWSER'); // Default to browser as per user hint
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceName, setSelectedVoiceName] = useState<string | null>(null);
   const [sessionData, setSessionData] = useState<SpellingSession | null>(activeSession);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -51,6 +54,18 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
   const [listImages, setListImages] = useState<string[]>([]);
   const [answerImages, setAnswerImages] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Filtered voices based on current list language
+  const filteredVoices = useRef<SpeechSynthesisVoice[]>([]);
+  
+  const isSessionChinese = sessionData ? 
+    sessionData.sessions[sessionData.currentSessionIndex]?.words?.some(w => /[\u4e00-\u9fa5]/.test(w)) : 
+    false;
+
+  filteredVoices.current = sessionData ? 
+    availableVoices.filter(v => isSessionChinese ? v.lang.toLowerCase().startsWith('zh') : v.lang.toLowerCase().startsWith('en')) : 
+    availableVoices;
+
   const audioContextRef = useRef<AudioContext | null>(null);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
@@ -71,8 +86,32 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
     if (audioContextRef.current.state === 'suspended') {
       audioContextRef.current.resume();
     }
+    
+    // Warm up SpeechSynthesis for mobile
+    const synth = window.speechSynthesis;
+    if (synth.speaking || synth.pending) {
+      synth.cancel();
+    }
+    const silent = new SpeechSynthesisUtterance("");
+    silent.volume = 0;
+    synth.speak(silent);
+    
     return audioContextRef.current;
   };
+
+  // Load available system voices
+  useEffect(() => {
+    const synth = window.speechSynthesis;
+    const updateVoices = () => {
+      const voices = synth.getVoices();
+      setAvailableVoices(voices);
+    };
+
+    updateVoices();
+    if (synth.onvoiceschanged !== undefined) {
+      synth.onvoiceschanged = updateVoices;
+    }
+  }, [selectedVoiceName]);
 
   const stopAudio = () => {
     if (currentSourceRef.current) {
@@ -86,57 +125,119 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
 
   // Handle Audio Generation and Playback
   const playWord = async (word: string) => {
-    stopAudio();
+    // 1. Initialize/Resume audio context immediately to capture the user gesture
     const ctx = initAudio();
-    setIsPlaying(true);
     
+    stopAudio();
+    setIsPlaying(true);
+
+    // Force browser TTS if mode is set
+    if (ttsMode === 'BROWSER') {
+      await playBrowserTTS(word);
+      return;
+    }
 
     try {
-      const base64 = await generateSpellingAudio(word);
-      if (base64 === '__BROWSER_TTS__') {
-        setIsPlaying(true);
-        const synth = window.speechSynthesis;
-        const utterance = new SpeechSynthesisUtterance(word);
-        const isChinese = /[\u4e00-\u9fa5]/.test(word);
-        if (isChinese) {
-            utterance.lang = 'zh-CN';
-            const voices = synth.getVoices();
-            const zhVoice = voices.find(v => v.lang.includes('zh'));
-            if (zhVoice) utterance.voice = zhVoice;
-        } else {
-            utterance.lang = 'en-US';
-        }
-        utterance.onend = () => setIsPlaying(false);
-        utterance.onerror = (e) => {
-            console.error("Speech Synthesis Error", e);
-            setIsPlaying(false);
-            alert("Could not play audio. Please check device volume and browser support.");
-        };
-        synth.cancel();
-        synth.speak(utterance);
-        return;
-      }
+      // 2. Fetch or generate the AI audio
+      const audioData = await generateSpellingAudio(word);
       
-      const audioBytes = decodeBase64(base64);
+      if (audioData === "__BROWSER_TTS__") {
+        throw new Error("Gemini TTS unavailable, falling back to browser");
+      }
 
-      const audioBuffer = await decodeAudioData(audioBytes, ctx, 24000, 1);
+      const bytes = decodeBase64(audioData);
+      
+      // The TTS model returns 24kHz mono PCM.
+      const buffer = await decodeAudioData(bytes, ctx, 24000, 1);
       
       const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
+      source.buffer = buffer;
       source.connect(ctx.destination);
       source.onended = () => setIsPlaying(false);
+      
       currentSourceRef.current = source;
-      source.start();
-    } catch (err: any) {
-      console.error("Playback error:", err);
-      setIsPlaying(false);
+      source.start(0);
+    } catch (err) {
+      console.warn("AI TTS failed, using browser fallback:", err);
+      await playBrowserTTS(word);
     }
+  };
+
+  const playBrowserTTS = async (word: string) => {
+    const synth = window.speechSynthesis;
+    
+    // Ensure voices are loaded
+    if (synth.getVoices().length === 0) {
+      await new Promise(resolve => {
+        const timeout = setTimeout(resolve, 500);
+        const handleVoices = () => {
+          clearTimeout(timeout);
+          synth.removeEventListener('voiceschanged', handleVoices);
+          resolve(null);
+        };
+        synth.addEventListener('voiceschanged', handleVoices);
+      });
+    }
+
+    const utterance = new SpeechSynthesisUtterance(word);
+    
+    // Explicitly check for Chinese characters in the current word
+    const isChinese = /[\u4e00-\u9fa5]/.test(word);
+    utterance.lang = isChinese ? 'zh-CN' : 'en-US';
+    
+    // Find a natural sounding voice if possible
+    const voices = synth.getVoices();
+    
+    // Check if user has explicitly selected a voice
+    const userVoice = voices.find(v => v.name === selectedVoiceName);
+    if (userVoice) {
+      utterance.voice = userVoice;
+      utterance.lang = userVoice.lang;
+    } else {
+      // Automatic voice selection logic
+      const lang = utterance.lang.toLowerCase();
+      
+      let preferredVoice;
+      if (isChinese) {
+        // Priority for Chinese: Ting-Ting, Siri, Premium, or any zh voice
+        preferredVoice = voices.find(v => v.lang.includes('zh') && (v.name.includes('Ting-Ting') || v.name.includes('Siri') || v.name.includes('Premium'))) ||
+                         voices.find(v => v.lang.includes('zh'));
+      } else {
+        // Priority for English: Samantha, Siri, Premium/Natural, Google, or any en voice
+        preferredVoice = voices.find(v => v.name.includes('Samantha')) ||
+                         voices.find(v => v.name.includes('Siri')) ||
+                         voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Premium'))) ||
+                         voices.find(v => v.lang.startsWith('en') && v.name.includes('Google')) ||
+                         voices.find(v => v.lang.startsWith('en'));
+      }
+
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+        utterance.lang = preferredVoice.lang;
+      }
+    }
+    
+    utterance.rate = isChinese ? 0.9 : 0.8;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+
+    synth.cancel();
+
+    utterance.onend = () => setIsPlaying(false);
+    utterance.onerror = (e) => {
+      console.error("SpeechSynthesisUtterance error", e);
+      setIsPlaying(false);
+    };
+
+    setTimeout(() => {
+      synth.speak(utterance);
+    }, 50);
   };
 
   // Auto-play effect
   useEffect(() => {
     if (step === 'PRACTICE' && sessionData) {
-      const currentWords = sessionData.sessions[sessionData.currentSessionIndex];
+      const currentWords = sessionData.sessions[sessionData.currentSessionIndex].words;
       if (currentWords && currentWords[currentIndex]) {
         // Delay slightly to allow transition
         const timer = setTimeout(() => {
@@ -204,31 +305,40 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
       // Chunks of 20. 
       // If remainder >= 10, new session.
       // If remainder < 10, merge into last session.
-      const sessions: string[][] = [];
+      const sessions: Session[] = [];
       const chunkSize = 20;
       
       for (let i = 0; i < extracted.length; i += chunkSize) {
-        sessions.push(extracted.slice(i, i + chunkSize));
+        sessions.push({ words: extracted.slice(i, i + chunkSize) });
       }
 
       if (sessions.length > 1) {
-        const last = sessions[sessions.length - 1];
+        const last = sessions[sessions.length - 1].words;
         if (last.length < 10) {
           const popped = sessions.pop()!;
-          sessions[sessions.length - 1] = [...sessions[sessions.length - 1], ...popped];
+          sessions[sessions.length - 1].words = [...sessions[sessions.length - 1].words, ...popped.words];
         }
       }
 
+      const detectedIsChinese = extracted.some(w => /[\u4e00-\u9fa5]/.test(w));
+      const sessionName = extracted.length > 0 ? 
+        (detectedIsChinese ? `Spelling: ${extracted[0]}...` : `Spelling: ${extracted[0]}...`) : 
+        `Spelling ${new Date().toLocaleDateString()}`;
+
       const newSession: SpellingSession = {
+        id: Math.random().toString(36).substr(2, 9),
+        name: sessionName,
+        createdAt: Date.now(),
         allWords: extracted,
         listImages: listImages,
         sessions: sessions,
-        currentSessionIndex: 0
+        currentSessionIndex: 0,
+        isCompleted: false
       };
 
       setSessionData(newSession);
       onSaveSession(newSession);
-      setStep('PRACTICE');
+      setStep('READY_AUDIO');
     } catch (err) {
       alert("Couldn't read the spelling list. Try clearer photos!");
     } finally {
@@ -236,8 +346,27 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
     }
   };
 
+  const startPractice = () => {
+    const ctx = initAudio();
+    
+    // Final foolproof check for mobile: speak a tiny silent sound immediately 
+    // on this click handler to "bless" the auth for SpeechSynthesis.
+    const synth = window.speechSynthesis;
+    if (synth.speaking) synth.cancel();
+    const utterance = new SpeechSynthesisUtterance("Go");
+    utterance.volume = 0.001; // Nearly silent
+    utterance.rate = 10;
+    synth.speak(utterance);
+    
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+    
+    setStep('PRACTICE');
+  };
+
   const handleNextWord = () => {
-    const currentSessionWords = sessionData!.sessions[sessionData!.currentSessionIndex];
+    const currentSessionWords = sessionData!.sessions[sessionData!.currentSessionIndex].words;
     if (currentIndex < currentSessionWords.length - 1) {
       setCurrentIndex(prev => prev + 1);
     } else {
@@ -274,7 +403,7 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
     if (answerImages.length === 0 || !sessionData) return;
     setIsProcessing(true);
     try {
-      const currentWords = sessionData.sessions[sessionData.currentSessionIndex];
+      const currentWords = sessionData.sessions[sessionData.currentSessionIndex].words;
       
       const evalResult = await evaluateSpellingAnswers(
         sessionData.listImages,
@@ -284,13 +413,16 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
       setResult(evalResult);
       onXpEarned(evalResult.correctWords.length);
       
-      const updatedSession = { 
+      const isLastSession = sessionData.currentSessionIndex >= sessionData.sessions.length - 1;
+
+      const updatedSession: SpellingSession = { 
         ...sessionData, 
-        currentSessionIndex: sessionData.currentSessionIndex + 1 
+        currentSessionIndex: sessionData.currentSessionIndex + 1,
+        isCompleted: isLastSession
       };
       
-      if (updatedSession.currentSessionIndex >= updatedSession.sessions.length) {
-        onSaveSession(null); // Finished all sessions
+      if (isLastSession) {
+        onSaveSession(null); // Signal removal from active sessions
       } else {
         onSaveSession(updatedSession);
       }
@@ -305,8 +437,59 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
     }
   };
 
+  const handleQuit = () => {
+    if (sessionData && !sessionData.isCompleted) {
+        onSaveSession(sessionData);
+    }
+    onDone();
+  };
+
   return (
-    <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in duration-500">
+    <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in duration-500 relative">
+      <div className="absolute -top-12 left-0">
+          <button 
+            onClick={handleQuit}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-50 transition-colors shadow-sm"
+          >
+            <ChevronLeft size={16} />
+            BACK TO DASHBOARD
+          </button>
+      </div>
+      {/* Voice Selection Dropdown (Only when a list is loaded and voices are found) */}
+      {sessionData && filteredVoices.current.length > 0 && (
+        <div className="absolute -top-12 right-0 flex items-center gap-2 z-20">
+          <div className="group relative">
+            <button className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-600 hover:border-indigo-300 transition-colors shadow-sm">
+              <Volume2 size={14} className="text-indigo-500" />
+              <span className="truncate max-w-[120px]">
+                {selectedVoiceName || "Auto Voice"}
+              </span>
+            </button>
+            <div className="absolute top-full right-0 mt-2 w-64 bg-white border border-slate-200 rounded-2xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all max-h-60 overflow-y-auto p-2 scrollbar-hide">
+              <div className="px-2 py-1.5 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-50 mb-1">
+                Select {isSessionChinese ? 'Chinese' : 'English'} Voice
+              </div>
+              <button 
+                onClick={() => setSelectedVoiceName(null)}
+                className={`w-full text-left px-3 py-2 rounded-xl text-sm font-bold transition-colors mb-1 ${!selectedVoiceName ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                Auto (Recommended)
+              </button>
+              {filteredVoices.current.map((voice) => (
+                <button 
+                  key={`${voice.name}-${voice.lang}`}
+                  onClick={() => setSelectedVoiceName(voice.name)}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-medium transition-colors mb-0.5 ${selectedVoiceName === voice.name ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                  <div className="font-bold text-sm truncate">{voice.name}</div>
+                  <div className="text-[10px] opacity-60 uppercase">{voice.lang}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Step 1: Upload List(s) */}
       {step === 'UPLOAD_LIST' && (
         <div className="text-center space-y-6">
@@ -361,7 +544,10 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
 
             <button 
               disabled={listImages.length === 0 || isProcessing}
-              onClick={processList}
+              onClick={() => {
+                initAudio();
+                processList();
+              }}
               className={`w-full py-5 rounded-2xl font-black text-lg shadow-xl transition-all flex items-center justify-center gap-3
                 ${listImages.length === 0 || isProcessing ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-100'}
               `}
@@ -376,20 +562,55 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
         </div>
       )}
 
-      {/* Step 2: Practice Session */}
+      {/* Step 2: Ready for Audio (Capture gesture) */}
+      {step === 'READY_AUDIO' && (
+        <div className="text-center space-y-8 animate-in zoom-in duration-500 py-12">
+          <div className="bg-indigo-100 w-24 h-24 rounded-[40px] flex items-center justify-center mx-auto text-indigo-600 animate-bounce">
+            <Volume2 size={48} />
+          </div>
+          <div className="space-y-4">
+            <h2 className="text-3xl font-black text-slate-800">Audio Check</h2>
+            <p className="text-slate-500 max-w-sm mx-auto">Tap the button below to enable sound for this session. This is required for mobile devices.</p>
+          </div>
+          
+          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm max-w-sm mx-auto space-y-4">
+            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100">
+              <span className="font-bold text-slate-600">Voice Mode</span>
+              <div className="flex bg-slate-200 p-1 rounded-xl">
+                <button 
+                  onClick={() => setTtsMode('BROWSER')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${ttsMode === 'BROWSER' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+                >
+                  SYSTEM
+                </button>
+                <button 
+                  onClick={() => setTtsMode('AI')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${ttsMode === 'AI' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+                >
+                  AI PRO
+                </button>
+              </div>
+            </div>
+            
+            <button 
+              onClick={startPractice}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-5 rounded-2xl font-black text-xl shadow-xl shadow-indigo-100 transition-all"
+            >
+              I'M READY!
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Practice Session */}
       {step === 'PRACTICE' && sessionData && (
         <div className="space-y-8 animate-in slide-in-from-bottom duration-500">
           <div className="flex justify-between items-center">
-            <button onClick={onDone} className="text-slate-400 hover:text-slate-600 font-bold flex items-center gap-2">
-              <ArrowLeft size={20} /> QUIT
-            </button>
-            <div className="flex flex-col items-end">
-              <div className="bg-indigo-100 px-4 py-1.5 rounded-full text-indigo-700 font-black text-sm mb-1">
-                SESSION {sessionData.currentSessionIndex + 1} OF {sessionData.sessions.length}
-              </div>
-              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                WORD {currentIndex + 1} OF {sessionData.sessions[sessionData.currentSessionIndex].length}
-              </div>
+            <div className="bg-indigo-100 px-4 py-1.5 rounded-full text-indigo-700 font-black text-sm">
+              SESSION {sessionData.currentSessionIndex + 1} OF {sessionData.sessions.length}
+            </div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">
+              WORD {currentIndex + 1} OF {sessionData.sessions[sessionData.currentSessionIndex].words.length}
             </div>
           </div>
 
@@ -407,7 +628,7 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
             </div>
 
             <button 
-              onClick={() => playWord(sessionData.sessions[sessionData.currentSessionIndex][currentIndex])}
+              onClick={() => playWord(sessionData.sessions[sessionData.currentSessionIndex].words[currentIndex])}
               className="text-indigo-600 font-black hover:text-indigo-700 flex items-center justify-center gap-2 mx-auto transition-colors"
             >
               <RotateCcw size={20} /> REPLAY AUDIO
@@ -427,7 +648,7 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
               onClick={handleNextWord}
               className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-3xl font-black text-xl shadow-lg shadow-emerald-100 transition-all flex items-center justify-center gap-3"
             >
-              {currentIndex === sessionData.sessions[sessionData.currentSessionIndex].length - 1 ? "I'M FINISHED!" : "NEXT WORD"}
+              {currentIndex === sessionData.sessions[sessionData.currentSessionIndex].words.length - 1 ? "I'M FINISHED!" : "NEXT WORD"}
               <SkipForward size={24} />
             </button>
           </div>

@@ -1,0 +1,37 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Information about the child user",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "school": { "type": "string" },
+        "level": { "type": "string" },
+        "parentEmail": { "type": "string" }
+      },
+      "required": ["name", "school", "level", "parentEmail"]
+    },
+    "UserStats": {
+      "title": "User Stats",
+      "description": "Progress and statistics for the user",
+      "type": "object",
+      "properties": {
+        "profile": { "$ref": "UserProfile" },
+        "totalXp": { "type": "number" },
+        "level": { "type": "number" },
+        "prizesWon": { "type": "array", "items": { "type": "string" } },
+        "submissionHistory": { "type": "array", "items": { "type": "string" } },
+        "lastScore": { "type": "number" },
+        "bonusCharges": { "type": "number" }
+      },
+      "required": ["profile", "totalXp", "level", "prizesWon", "submissionHistory", "lastScore", "bonusCharges"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserStats",
+      "description": "The stats and profile information for a child user. Authenticated by parent."
+    }
+  }
+}

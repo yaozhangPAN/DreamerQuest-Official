@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidProfile(profile) {
+      return profile is map
+        && profile.keys().hasAll(['name', 'school', 'level', 'parentEmail'])
+        && profile.name is string && profile.name.size() > 0 && profile.name.size() <= 100
+        && profile.school is string && profile.school.size() > 0 && profile.school.size() <= 100
+        && profile.level is string && profile.level.size() > 0 && profile.level.size() <= 50
+        && profile.parentEmail is string && profile.parentEmail.size() > 0 && profile.parentEmail.size() <= 100;
+    }
+
+    function isValidUserStats(data) {
+      return data is map
+        && data.keys().hasAll(['profile', 'totalXp', 'level', 'prizesWon', 'submissionHistory', 'lastScore', 'bonusCharges'])
+        && isValidProfile(data.profile)
+        && data.totalXp is number
+        && data.level is number
+        && data.prizesWon is list && data.prizesWon.size() <= 100
+        && data.submissionHistory is list && data.submissionHistory.size() <= 1000
+        && data.lastScore is number
+        && data.bonusCharges is number;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      
+      allow create: if isOwner(userId) 
+        && isValidId(userId)
+        && isValidUserStats(incoming())
+        && incoming().profile.parentEmail == request.auth.token.email;
+
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserStats(incoming())
+        && incoming().profile.parentEmail == existing().profile.parentEmail;
+
+      allow delete: if false;
+    }
+  }
+}

@@ -125,7 +125,7 @@ const CoPilotChat: React.FC<CoPilotChatProps> = ({ topic, onBack, onSubmitMode }
           className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-100 transition-all"
         >
           <PenTool size={20} />
-          DONE GETTING IDEAS? SUBMIT ESSAY
+          DONE GETTING IDEAS? COMPOSITION PRACTICE
         </button>
       </div>
     </div>

@@ -15,11 +15,27 @@ export interface EvaluationResult {
   bonusApplied: boolean;
 }
 
+export interface Session {
+  words: string[];
+}
+
 export interface SpellingSession {
+  id: string;
+  name: string;
+  createdAt: number;
   allWords: string[];
   listImages: string[];
-  sessions: string[][];
+  sessions: Session[];
   currentSessionIndex: number;
+  isCompleted: boolean;
+}
+
+export interface HistoryItem {
+  id: string;
+  name: string;
+  type: 'Spelling' | 'Composition' | 'Oral';
+  completedAt: number;
+  xpEarned: number;
 }
 
 export interface UserProfile {
@@ -27,7 +43,6 @@ export interface UserProfile {
   school: string;
   level: string;
   parentEmail: string;
-  password: string;
 }
 
 export interface UserStats {
@@ -36,9 +51,18 @@ export interface UserStats {
   level: number;
   prizesWon: string[];
   submissionHistory: string[]; // Hashes of previous submissions
+  submissions: HistoryItem[];
   lastScore: number;
   bonusCharges: number; // For the +10% next 2 essays bonus
-  activeSpellingSession: SpellingSession | null;
+  activeSpellingSessions: SpellingSession[];
+  // Monetization fields
+  isSubscribed: boolean;
+  githubConnection?: {
+    username: string;
+    avatarUrl: string;
+    accessToken?: string;
+    connectedAt: number;
+  };
 }
 
 export interface ChatMessage {
@@ -46,28 +70,36 @@ export interface ChatMessage {
   text: string;
 }
 
+export interface ScoreItem {
+  label: string;
+  score: number;
+  max: number;
+}
+
+export interface ScoreCategory {
+  title: string;
+  items: ScoreItem[];
+}
+
 export interface OralEvaluation {
-  summaryScores: {
-    personalResponse: number;
-    language: number;
-    delivery: number;
-  };
-  videoResponseScores: {
-    interaction: number;
-    range: number;
-    fluency: number;
-  };
+  categories: ScoreCategory[];
   feedback: string;
   totalMarks: number;
+  maxMarks: number;
+  modelAnswer?: string;
+  goodWords?: string[];
 }
 
 export enum AppView {
   SIGNUP = 'SIGNUP',
+  LOGIN = 'LOGIN',
   DASHBOARD = 'DASHBOARD',
   SUBMIT = 'SUBMIT',
   CO_PILOT = 'CO_PILOT',
   RESULT = 'RESULT',
   SPELLING = 'SPELLING',
   ORAL_SELECTION = 'ORAL_SELECTION',
-  ORAL_PRACTICE = 'ORAL_PRACTICE'
+  ORAL_PRACTICE = 'ORAL_PRACTICE',
+  HISTORY = 'HISTORY',
+  SESSION_SELECT = 'SESSION_SELECT'
 }
