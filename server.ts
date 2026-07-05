@@ -3,7 +3,14 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import Stripe from "stripe";
 import { fileURLToPath } from "url";
+import { readFileSync } from "fs";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
+
+const firebaseConfig = JSON.parse(
+  readFileSync(new URL("./firebase-applet-config.json", import.meta.url), "utf-8")
+) as { firestoreDatabaseId: string; projectId: string };
+
 import {
   extractTopicFromImage,
   evaluateEssay,
@@ -31,7 +38,7 @@ if (!admin.apps.length) {
   });
 }
 const authAdmin = admin.auth();
-const dbAdmin = admin.firestore();
+const dbAdmin = getFirestore(undefined, firebaseConfig.firestoreDatabaseId);
 
 async function startServer() {
   const app = express();

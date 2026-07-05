@@ -4,6 +4,7 @@ import { auth, db } from '../lib/firebase';
 import { GoogleAuthProvider, signInWithPopup, User } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../lib/firebaseUtils';
+import { isDevAuthBypassEnabled } from '../lib/devAuth';
 import { GraduationCap, ArrowRight, Sparkles, User as UserIcon, Building2, BookOpen, Mail } from 'lucide-react';
 
 interface AuthViewProps {
@@ -11,11 +12,13 @@ interface AuthViewProps {
 }
 
 const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
+  const isDevBypass = isDevAuthBypassEnabled();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   
   // States for profile completion
   const [pendingUser, setPendingUser] = useState<User | null>(null);
+  const [showDevProfile, setShowDevProfile] = useState(isDevBypass);
   const [formData, setFormData] = useState({
     name: '',
     school: '',
@@ -48,6 +51,8 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user') {
         setError('Sign in was cancelled.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError('This browser domain is not authorized for Google Sign-In. Open http://localhost:3000 in Chrome, or run with Firebase Emulator enabled.');
       } else {
         setError(err.message || 'Login failed. Note: Please try opening the app in a new tab if you encounter network issues.');
       }
@@ -58,20 +63,26 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
 
   const handleProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pendingUser) return;
-    
     setIsLoading(true);
     setError('');
+
+    const newProfile: UserProfile = {
+      name: formData.name || 'Hero',
+      school: formData.school || 'My School',
+      level: formData.level,
+      parentEmail: formData.parentEmail,
+    };
+
+    if (isDevBypass && showDevProfile) {
+      onSuccess(newProfile);
+      setIsLoading(false);
+      return;
+    }
+
+    if (!pendingUser) return;
     
     try {
       const userDocRef = doc(db, 'users', pendingUser.uid);
-      
-      const newProfile: UserProfile = {
-        name: formData.name || 'Hero',
-        school: formData.school || 'My School',
-        level: formData.level,
-        parentEmail: formData.parentEmail,
-      };
       
       const newStats = {
         profile: newProfile,
@@ -94,6 +105,8 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     }
   };
 
+  const handleDevProfileSubmit = handleProfileSubmit;
+
   return (
     <div className="max-w-md mx-auto py-12 px-4 animate-in fade-in slide-in-from-bottom-8 duration-700">
       <div className="text-center mb-10 space-y-4">
@@ -103,6 +116,11 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
         <div className="space-y-2">
           <h2 className="text-4xl font-black text-slate-800 tracking-tight">DreamerQuest</h2>
           <p className="text-slate-500 font-medium">Log in to start your adventure!</p>
+          {isDevBypass && (
+            <p className="text-xs font-bold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full inline-block">
+              Local dev mode — no Google sign-in required
+            </p>
+          )}
         </div>
       </div>
 
@@ -119,7 +137,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
           </div>
         )}
 
-        {!pendingUser ? (
+        {!pendingUser && !showDevProfile ? (
           <button 
             onClick={handleGoogleLogin}
             disabled={isLoading}
@@ -129,10 +147,16 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             {!isLoading && <ArrowRight size={20} />}
           </button>
         ) : (
-          <form onSubmit={handleProfileSubmit} className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-500">
+          <form onSubmit={handleDevProfileSubmit} className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-500">
             <div className="text-center mb-6">
-              <h3 className="text-xl font-bold text-slate-800">Complete Your Profile</h3>
-              <p className="text-slate-500 text-sm">Tell us a bit more about yourself to get started.</p>
+              <h3 className="text-xl font-bold text-slate-800">
+                {showDevProfile && !pendingUser ? 'Create Your Dev Profile' : 'Complete Your Profile'}
+              </h3>
+              <p className="text-slate-500 text-sm">
+                {showDevProfile && !pendingUser
+                  ? 'Fill in your details to explore the app locally.'
+                  : 'Tell us a bit more about yourself to get started.'}
+              </p>
             </div>
             
             <div className="space-y-4">

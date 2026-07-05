@@ -17,8 +17,17 @@ import { auth, db } from './lib/firebase';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from './lib/firebaseUtils';
 import { signOut } from 'firebase/auth';
+import {
+  devUser,
+  getDevSession,
+  isDevAuthBypassEnabled,
+  loadDevStats,
+  saveDevStats,
+  setDevSession,
+} from './lib/devAuth';
 
 const XP_PER_LEVEL = 1000;
+const isDevBypass = isDevAuthBypassEnabled();
 
 const defaultStats: UserStats = {
   profile: null,
@@ -34,7 +43,9 @@ const defaultStats: UserStats = {
 };
 
 const App: React.FC = () => {
-  const [user, authLoading] = useAuthState(auth);
+  const [firebaseUser, authLoading] = useAuthState(auth);
+  const [devLoggedIn, setDevLoggedIn] = useState(isDevBypass && getDevSession());
+  const user = isDevBypass ? (devLoggedIn ? devUser : null) : firebaseUser;
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
   const [userStats, setUserStats] = useState<UserStats>(defaultStats);
@@ -104,6 +115,22 @@ const App: React.FC = () => {
   }, [user]);
 
   useEffect(() => {
+    if (isDevBypass) {
+      if (devLoggedIn) {
+        const saved = loadDevStats();
+        if (saved) {
+          setUserStats({ ...defaultStats, ...saved });
+          setView(saved.profile ? AppView.DASHBOARD : AppView.SIGNUP);
+        }
+        setIsDataLoaded(true);
+      } else {
+        setUserStats(defaultStats);
+        setView(AppView.SIGNUP);
+        setIsDataLoaded(false);
+      }
+      return;
+    }
+
     if (user) {
       if (!isDataLoaded) {
         getDoc(doc(db, 'users', user.uid))
@@ -127,9 +154,16 @@ const App: React.FC = () => {
       setView(AppView.SIGNUP);
       setIsDataLoaded(false);
     }
-  }, [user]);
+  }, [user, isDevBypass, devLoggedIn]);
 
   useEffect(() => {
+    if (isDevBypass) {
+      if (devLoggedIn && isDataLoaded && userStats.profile) {
+        saveDevStats(userStats);
+      }
+      return;
+    }
+
     if (user && isDataLoaded && userStats.profile) {
       setDoc(doc(db, 'users', user.uid), userStats)
         .catch(e => handleFirestoreError(e, OperationType.WRITE, 'users'));
@@ -285,16 +319,32 @@ const App: React.FC = () => {
   }
 
   const handleLogout = async () => {
+    if (isDevBypass) {
+      setDevSession(false);
+      setDevLoggedIn(false);
+      setUserStats(defaultStats);
+      setView(AppView.SIGNUP);
+      return;
+    }
     await signOut(auth);
   };
 
-  if (authLoading || (user && !isDataLoaded)) {
+  const sessionLoading = isDevBypass ? false : authLoading;
+
+  if (sessionLoading || (user && !isDataLoaded)) {
     return <div className="min-h-screen bg-slate-50 flex items-center justify-center font-bold text-slate-500">Verifying session...</div>;
   }
 
   if (!user || view === AppView.SIGNUP || view === AppView.LOGIN) {
     return <AuthView onSuccess={(profile) => {
-      if (profile) {
+      if (isDevBypass && profile) {
+        const stats = { ...defaultStats, profile };
+        setUserStats(stats);
+        saveDevStats(stats);
+        setDevSession(true);
+        setDevLoggedIn(true);
+        setIsDataLoaded(true);
+      } else if (profile) {
         setUserStats({ ...defaultStats, profile });
       }
       setView(AppView.DASHBOARD);
