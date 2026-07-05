@@ -15,7 +15,9 @@ import { BookOpen, LayoutDashboard, Send, Mic, LogOut, PlayCircle, Zap, ChevronL
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { auth, db } from './lib/firebase';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from './lib/firebaseUtils';
+import { logFirestoreError, OperationType } from './lib/firebaseUtils';
+import { mergeUserStatsFromFirestore, toClientFirestorePayload } from './lib/userStatsSync';
+import { isValidEssayEvaluation } from './lib/validateEvaluation';
 import { signOut } from 'firebase/auth';
 import {
   devUser,
@@ -47,6 +49,8 @@ const App: React.FC = () => {
   const [devLoggedIn, setDevLoggedIn] = useState(isDevBypass && getDevSession());
   const user = isDevBypass ? (devLoggedIn ? devUser : null) : firebaseUser;
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [needsProfileCompletion, setNeedsProfileCompletion] = useState(false);
 
   const [userStats, setUserStats] = useState<UserStats>(defaultStats);
   const [view, setView] = useState<AppView>(AppView.SIGNUP);
@@ -73,21 +77,14 @@ const App: React.FC = () => {
   };
 
   const refreshStats = async () => {
-    if (user) {
-      try {
-        const snap = await getDoc(doc(db, 'users', user.uid));
-        if (snap.exists()) {
-          const data = snap.data();
-          setUserStats({ 
-            ...defaultStats, 
-            ...data,
-            submissions: data.submissions || [],
-            activeSpellingSessions: data.activeSpellingSessions || (data.activeSpellingSession ? [data.activeSpellingSession] : [])
-          } as UserStats);
-        }
-      } catch (e) {
-        handleFirestoreError(e, OperationType.GET, 'users');
+    if (!user || isDevBypass) return;
+    try {
+      const snap = await getDoc(doc(db, 'users', user.uid));
+      if (snap.exists()) {
+        setUserStats(mergeUserStatsFromFirestore(snap.data(), defaultStats));
       }
+    } catch (e) {
+      logFirestoreError(e, OperationType.GET, 'users');
     }
   };
 
@@ -101,6 +98,14 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!user || isDevBypass) return;
+    refreshStats();
+    const onFocus = () => refreshStats();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [user?.uid, isDevBypass]);
+
+  useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const origin = event.origin;
       if (!origin.endsWith('.run.app') && !origin.includes('localhost')) {
@@ -112,7 +117,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [user]);
+  }, [user?.uid, isDevBypass]);
 
   useEffect(() => {
     if (isDevBypass) {
@@ -133,26 +138,31 @@ const App: React.FC = () => {
 
     if (user) {
       if (!isDataLoaded) {
+        setSessionError(null);
         getDoc(doc(db, 'users', user.uid))
           .then(snap => {
             if (snap.exists()) {
-              const data = snap.data();
-              setUserStats({ 
-                ...defaultStats, 
-                ...data,
-                submissions: data.submissions || [],
-                activeSpellingSessions: data.activeSpellingSessions || (data.activeSpellingSession ? [data.activeSpellingSession] : [])
-              } as UserStats);
+              setUserStats(mergeUserStatsFromFirestore(snap.data(), defaultStats));
               setView(AppView.DASHBOARD);
+              setNeedsProfileCompletion(false);
+            } else {
+              setNeedsProfileCompletion(true);
+              setView(AppView.SIGNUP);
             }
             setIsDataLoaded(true);
           })
-          .catch(e => handleFirestoreError(e, OperationType.GET, 'users'));
+          .catch(e => {
+            logFirestoreError(e, OperationType.GET, 'users');
+            setSessionError('Could not load your profile. Check your connection and try again.');
+            setIsDataLoaded(true);
+          });
       }
     } else {
       setUserStats(defaultStats);
       setView(AppView.SIGNUP);
       setIsDataLoaded(false);
+      setSessionError(null);
+      setNeedsProfileCompletion(false);
     }
   }, [user, isDevBypass, devLoggedIn]);
 
@@ -165,10 +175,10 @@ const App: React.FC = () => {
     }
 
     if (user && isDataLoaded && userStats.profile) {
-      setDoc(doc(db, 'users', user.uid), userStats)
-        .catch(e => handleFirestoreError(e, OperationType.WRITE, 'users'));
+      setDoc(doc(db, 'users', user.uid), toClientFirestorePayload(userStats), { merge: true })
+        .catch(e => logFirestoreError(e, OperationType.WRITE, 'users'));
     }
-  }, [userStats, user, isDataLoaded]);
+  }, [userStats, user, isDataLoaded, isDevBypass]);
 
   const generatePrizeCode = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -195,15 +205,15 @@ const App: React.FC = () => {
   };
 
   const handleSpellingXp = (correctCount: number) => {
-    const xpToAdd = correctCount * 5; // 5 XP per word
-    const newTotalXp = userStats.totalXp + xpToAdd;
-    const newLevel = Math.floor(newTotalXp / XP_PER_LEVEL) + 1;
-    
-    setUserStats(prev => ({
-      ...prev,
-      totalXp: newTotalXp,
-      level: newLevel
-    }));
+    const xpToAdd = correctCount * 5;
+    setUserStats(prev => {
+      const newTotalXp = prev.totalXp + xpToAdd;
+      return {
+        ...prev,
+        totalXp: newTotalXp,
+        level: Math.floor(newTotalXp / XP_PER_LEVEL) + 1,
+      };
+    });
 
     if (currentActiveSpellingSession) {
       recordSubmission(currentActiveSpellingSession.name, 'Spelling', xpToAdd);
@@ -239,15 +249,15 @@ const App: React.FC = () => {
   };
 
   const handleOralXp = (marks: number) => {
-    const xpToAdd = marks * 15; // 15 XP per mark
-    const newTotalXp = userStats.totalXp + xpToAdd;
-    const newLevel = Math.floor(newTotalXp / XP_PER_LEVEL) + 1;
-
-    setUserStats(prev => ({
-      ...prev,
-      totalXp: newTotalXp,
-      level: newLevel
-    }));
+    const xpToAdd = marks * 15;
+    setUserStats(prev => {
+      const newTotalXp = prev.totalXp + xpToAdd;
+      return {
+        ...prev,
+        totalXp: newTotalXp,
+        level: Math.floor(newTotalXp / XP_PER_LEVEL) + 1,
+      };
+    });
 
     recordSubmission(`Oral Practice #${selectedOralId}`, 'Oral', xpToAdd);
   };
@@ -256,67 +266,84 @@ const App: React.FC = () => {
     setIsProcessing(true);
     try {
       const contentHash = `hash_${imagesBase64.reduce((acc, curr) => acc + curr.length, 0)}`;
-      const isDuplicate = userStats.submissionHistory.includes(contentHash);
 
       const evaluation = await evaluateEssay(imagesBase64, currentTopic);
-      
-      let scoreXp = evaluation.scores.idea + evaluation.scores.structure + evaluation.scores.content + evaluation.scores.language + evaluation.scores.voice;
-      
-      if (isCoPilotActiveForSubmission) {
-        scoreXp = Math.floor(scoreXp / 4);
+      if (!isValidEssayEvaluation(evaluation)) {
+        throw new Error('Invalid evaluation response from AI service.');
       }
 
-      const isFirstSubmission = userStats.submissionHistory.length === 0;
-      if (isFirstSubmission && scoreXp < 50 && scoreXp > 0) scoreXp = 50;
-      if (isDuplicate) scoreXp = 0;
+      setUserStats(prev => {
+        const isDuplicate = prev.submissionHistory.includes(contentHash);
+        let scoreXp =
+          evaluation.scores.idea +
+          evaluation.scores.structure +
+          evaluation.scores.content +
+          evaluation.scores.language +
+          evaluation.scores.voice;
 
-      let finalXp = scoreXp;
-      const bonusApplied = userStats.bonusCharges > 0 && !isDuplicate && scoreXp > 0;
-      if (bonusApplied) {
-        finalXp = Math.floor(finalXp * 1.1);
-      }
+        if (isCoPilotActiveForSubmission) {
+          scoreXp = Math.floor(scoreXp / 4);
+        }
 
-      const newTotalXp = userStats.totalXp + finalXp;
-      const oldLevel = userStats.level;
-      const newLevel = Math.floor(newTotalXp / XP_PER_LEVEL) + 1;
-      
-      let newPrizes = [...userStats.prizesWon];
-      if (Math.floor(newLevel / 10) > Math.floor(oldLevel / 10)) {
-        newPrizes.push(generatePrizeCode());
-      }
+        const isFirstSubmission = prev.submissionHistory.length === 0;
+        if (isFirstSubmission && scoreXp < 50 && scoreXp > 0) scoreXp = 50;
+        if (isDuplicate) scoreXp = 0;
 
-      let newBonusCharges = userStats.bonusCharges > 0 ? userStats.bonusCharges - 1 : 0;
-      if (!isDuplicate && !isFirstSubmission && scoreXp > userStats.lastScore && scoreXp > 0) {
-        newBonusCharges = 2;
-      }
+        let finalXp = scoreXp;
+        const bonusApplied = prev.bonusCharges > 0 && !isDuplicate && scoreXp > 0;
+        if (bonusApplied) {
+          finalXp = Math.floor(finalXp * 1.1);
+        }
 
-      setUserStats(prev => ({
-        ...prev,
-        totalXp: newTotalXp,
-        level: newLevel,
-        prizesWon: newPrizes,
-        submissionHistory: isDuplicate ? prev.submissionHistory : [...prev.submissionHistory, contentHash],
-        lastScore: isDuplicate ? prev.lastScore : scoreXp,
-        bonusCharges: newBonusCharges
-      }));
+        const newTotalXp = prev.totalXp + finalXp;
+        const oldLevel = prev.level;
+        const newLevel = Math.floor(newTotalXp / XP_PER_LEVEL) + 1;
 
-      recordSubmission(currentTopic || "Composition Submission", 'Composition', finalXp);
+        let newPrizes = [...prev.prizesWon];
+        if (Math.floor(newLevel / 10) > Math.floor(oldLevel / 10)) {
+          newPrizes.push(generatePrizeCode());
+        }
 
-      setLastEvaluation({
-        ...evaluation,
-        totalXp: finalXp,
-        isDuplicate,
-        bonusApplied
+        let newBonusCharges = prev.bonusCharges > 0 ? prev.bonusCharges - 1 : 0;
+        if (!isDuplicate && !isFirstSubmission && scoreXp > prev.lastScore && scoreXp > 0) {
+          newBonusCharges = 2;
+        }
+
+        const newItem: HistoryItem = {
+          id: Math.random().toString(36).substr(2, 9),
+          name: currentTopic || 'Composition Submission',
+          type: 'Composition',
+          completedAt: Date.now(),
+          xpEarned: finalXp,
+        };
+
+        setLastEvaluation({
+          ...evaluation,
+          totalXp: finalXp,
+          isDuplicate,
+          bonusApplied,
+        });
+        setView(AppView.RESULT);
+        setCurrentTopic('');
+        setIsCoPilotActiveForSubmission(false);
+
+        return {
+          ...prev,
+          totalXp: newTotalXp,
+          level: newLevel,
+          prizesWon: newPrizes,
+          submissionHistory: isDuplicate ? prev.submissionHistory : [...prev.submissionHistory, contentHash],
+          lastScore: isDuplicate ? prev.lastScore : scoreXp,
+          bonusCharges: newBonusCharges,
+          submissions: [newItem, ...(prev.submissions || [])],
+        };
       });
-      setView(AppView.RESULT);
-      setCurrentTopic('');
-      setIsCoPilotActiveForSubmission(false);
     } catch (error) {
       alert("Error processing your homework. Please try again.");
     } finally {
       setIsProcessing(false);
     }
-  }
+  };
 
   const handleLogout = async () => {
     if (isDevBypass) {
@@ -335,8 +362,30 @@ const App: React.FC = () => {
     return <div className="min-h-screen bg-slate-50 flex items-center justify-center font-bold text-slate-500">Verifying session...</div>;
   }
 
+  if (sessionError && user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-rose-600 font-bold">{sessionError}</p>
+        <button
+          onClick={() => {
+            setIsDataLoaded(false);
+            setSessionError(null);
+          }}
+          className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold"
+        >
+          Retry
+        </button>
+        <button onClick={handleLogout} className="text-slate-500 font-semibold underline">
+          Log out
+        </button>
+      </div>
+    );
+  }
+
   if (!user || view === AppView.SIGNUP || view === AppView.LOGIN) {
-    return <AuthView onSuccess={(profile) => {
+    return <AuthView
+      resumeUser={needsProfileCompletion && firebaseUser ? firebaseUser : null}
+      onSuccess={(profile) => {
       if (isDevBypass && profile) {
         const stats = { ...defaultStats, profile };
         setUserStats(stats);
@@ -346,6 +395,7 @@ const App: React.FC = () => {
         setIsDataLoaded(true);
       } else if (profile) {
         setUserStats({ ...defaultStats, profile });
+        setNeedsProfileCompletion(false);
       }
       setView(AppView.DASHBOARD);
     }} />;

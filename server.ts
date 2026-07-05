@@ -3,13 +3,9 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import Stripe from "stripe";
 import { fileURLToPath } from "url";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-
-const firebaseConfig = JSON.parse(
-  readFileSync(new URL("./firebase-applet-config.json", import.meta.url), "utf-8")
-) as { firestoreDatabaseId: string; projectId: string };
 
 import {
   extractTopicFromImage,
@@ -31,10 +27,24 @@ const resolvedDirname = typeof import.meta !== "undefined" && import.meta.url
   ? path.dirname(__filenameSaved)
   : (typeof __dirname !== "undefined" ? __dirname : process.cwd());
 
+const firebaseConfigPath = [
+  path.join(resolvedDirname, "firebase-applet-config.json"),
+  path.join(process.cwd(), "firebase-applet-config.json"),
+].find((candidate) => existsSync(candidate));
+
+if (!firebaseConfigPath) {
+  throw new Error("firebase-applet-config.json not found");
+}
+
+const firebaseConfig = JSON.parse(readFileSync(firebaseConfigPath, "utf-8")) as {
+  firestoreDatabaseId: string;
+  projectId: string;
+};
+
 // Initialize Firebase Admin
 if (!admin.apps.length) {
   admin.initializeApp({
-    projectId: process.env.FIREBASE_PROJECT_ID 
+    projectId: process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId,
   });
 }
 const authAdmin = admin.auth();
@@ -96,8 +106,8 @@ async function startServer() {
     res.json({ received: true });
   });
 
-  // Regular JSON parsing for other routes
-  app.use(express.json());
+  // Regular JSON parsing for other routes (large limit for base64 image uploads)
+  app.use(express.json({ limit: '50mb' }));
 
   // Gemini AI Endpoints
   app.post("/api/gemini/extract-topic", async (req, res) => {

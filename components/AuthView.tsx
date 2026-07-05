@@ -1,17 +1,19 @@
-import React, { useState } from 'react';
-import { UserProfile } from '../types';
+import React, { useState, useEffect } from 'react';
+import { UserProfile, UserStats } from '../types';
 import { auth, db } from '../lib/firebase';
 import { GoogleAuthProvider, signInWithPopup, User } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../lib/firebaseUtils';
+import { logFirestoreError, OperationType } from '../lib/firebaseUtils';
+import { toClientFirestorePayload } from '../lib/userStatsSync';
 import { isDevAuthBypassEnabled } from '../lib/devAuth';
 import { GraduationCap, ArrowRight, Sparkles, User as UserIcon, Building2, BookOpen, Mail } from 'lucide-react';
 
 interface AuthViewProps {
   onSuccess: (profile?: UserProfile) => void;
+  resumeUser?: User | null;
 }
 
-const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
+const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
   const isDevBypass = isDevAuthBypassEnabled();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -25,6 +27,17 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     level: 'Primary 1',
     parentEmail: ''
   });
+
+  useEffect(() => {
+    if (resumeUser && !isDevBypass) {
+      setPendingUser(resumeUser);
+      setFormData(prev => ({
+        ...prev,
+        name: resumeUser.displayName || '',
+        parentEmail: resumeUser.email || '',
+      }));
+    }
+  }, [resumeUser, isDevBypass]);
 
   const handleGoogleLogin = async () => {
     setIsLoading(true);
@@ -66,11 +79,12 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     setIsLoading(true);
     setError('');
 
+    const googleEmail = pendingUser?.email || formData.parentEmail;
     const newProfile: UserProfile = {
       name: formData.name || 'Hero',
       school: formData.school || 'My School',
       level: formData.level,
-      parentEmail: formData.parentEmail,
+      parentEmail: googleEmail,
     };
 
     if (isDevBypass && showDevProfile) {
@@ -84,19 +98,21 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     try {
       const userDocRef = doc(db, 'users', pendingUser.uid);
       
-      const newStats = {
+      const newStats: UserStats = {
         profile: newProfile,
         totalXp: 0,
         level: 1,
         prizesWon: [],
         submissionHistory: [],
+        submissions: [],
         lastScore: 0,
         bonusCharges: 0,
-        activeSpellingSession: null,
-        isSubscribed: false
+        activeSpellingSessions: [],
+        isSubscribed: false,
       };
       
-      await setDoc(userDocRef, newStats).catch(e => handleFirestoreError(e, OperationType.WRITE, 'users'));
+      await setDoc(userDocRef, toClientFirestorePayload(newStats), { merge: true })
+        .catch(e => logFirestoreError(e, OperationType.WRITE, 'users'));
       onSuccess(newProfile);
     } catch (err: any) {
       setError(err.message || 'Failed to save profile.');
@@ -213,9 +229,10 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                   type="email"
                   placeholder="Parent's Email Address"
                   required
+                  readOnly={!!pendingUser && !isDevBypass}
                   value={formData.parentEmail}
                   onChange={e => setFormData({ ...formData, parentEmail: e.target.value })}
-                  className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-800 font-medium placeholder:text-slate-400 transition-all"
+                  className={`w-full pl-12 pr-4 py-4 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-800 font-medium placeholder:text-slate-400 transition-all ${pendingUser && !isDevBypass ? 'bg-slate-100 cursor-not-allowed' : 'bg-slate-50 focus:bg-white'}`}
                 />
               </div>
             </div>

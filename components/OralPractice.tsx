@@ -561,6 +561,9 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
     }
   };
 
+  const handleNextRef = useRef(handleNext);
+  handleNextRef.current = handleNext;
+
   const submitForEvaluation = async () => {
     setPhase('EVALUATING');
     setIsProcessing(true);
@@ -575,7 +578,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
         readingTextOrigin: content.readingText
       });
       setEvaluation(result);
-      onXpEarned(result.totalMarks);
+      onXpEarned(typeof result.totalMarks === 'number' ? result.totalMarks : 0);
       setPhase('RESULT');
     } catch (error) {
       alert("Evaluation failed. Please try again.");
@@ -595,7 +598,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
             playBell();
           }
           if (prev <= 1) {
-            handleNext();
+            handleNextRef.current();
             return 0;
           }
           return prev - 1;
@@ -603,7 +606,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
       }, 1000);
     }
     return () => clearInterval(timer);
-  }, [isRecording, phase, task1TimeLeft, handleNext]);
+  }, [isRecording, phase]);
 
   const playBell = () => {
     try {

@@ -444,6 +444,16 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
     onDone();
   };
 
+  const handleResultContinue = () => {
+    if (sessionData && !sessionData.isCompleted && sessionData.currentSessionIndex < sessionData.sessions.length) {
+      setCurrentIndex(0);
+      setResult(null);
+      setStep('PRACTICE');
+      return;
+    }
+    onDone();
+  };
+
   return (
     <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in duration-500 relative">
       <div className="absolute -top-12 left-0">
@@ -759,10 +769,12 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
           </div>
 
           <button 
-            onClick={onDone}
+            onClick={handleResultContinue}
             className="w-full bg-slate-800 hover:bg-slate-900 text-white font-black text-lg py-5 rounded-2xl transition-all"
           >
-            {sessionData && sessionData.currentSessionIndex < sessionData.sessions.length ? "CONTINUE NEXT SESSION" : "BACK TO DASHBOARD"}
+            {sessionData && !sessionData.isCompleted && sessionData.currentSessionIndex < sessionData.sessions.length
+              ? "CONTINUE NEXT SESSION"
+              : "BACK TO DASHBOARD"}
           </button>
         </div>
       )}
