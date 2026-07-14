@@ -74,3 +74,56 @@ npm start
 ```
 
 Ensure `.env.local` (or host environment variables) and `firebase-applet-config.json` exist on the server before starting.
+
+## Deploy to Google Cloud Run
+
+This app is a long-running Express server — **Cloud Run** is the recommended host.
+
+### One-time setup
+
+1. Install / login to the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install):
+
+```bash
+gcloud auth login
+gcloud config set project YOUR_GCP_PROJECT_ID
+```
+
+2. Ensure local files exist (same as local setup):
+
+```bash
+cp firebase-applet-config.example.json firebase-applet-config.json
+# fill Firebase web config
+# .env.local must contain at least GEMINI_API_KEY
+```
+
+3. (Recommended) Give the Cloud Run runtime service account Firestore access, e.g. **Cloud Datastore User** (`roles/datastore.user`) on your GCP project — so Firebase Admin can read/write user stats.
+
+### Deploy
+
+From the repo root (builds with the included `Dockerfile`):
+
+```bash
+# Option A — helper script (reads GEMINI_API_KEY from env or .env.local)
+./scripts/deploy-cloudrun.sh
+
+# Option B — manual
+export GEMINI_API_KEY=...
+export FIREBASE_PROJECT_ID=...   # usually same as firebase-applet-config.json projectId
+gcloud run deploy dreamerquest \
+  --region=asia-southeast1 \
+  --source=. \
+  --allow-unauthenticated \
+  --port=8080 \
+  --memory=1Gi \
+  --set-env-vars="NODE_ENV=production,GEMINI_API_KEY=${GEMINI_API_KEY},FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}"
+```
+
+After the first deploy, set `APP_URL` to the service URL shown by Cloud Run (`https://….run.app`), then:
+
+**Firebase Console → Authentication → Settings → Authorized domains** → add that Cloud Run host.
+
+### Notes
+
+- Do **not** set `VITE_DEV_AUTH_BYPASS` in Cloud Run.
+- Article quiz data is stored under `/app/data` inside the container (**ephemeral** — wiped on new revisions / scale-to-zero). Fine for a trial; migrate to Firestore later for real classes.
+- Prefer Secret Manager for `GEMINI_API_KEY` in production instead of plain env vars once you harden the setup.

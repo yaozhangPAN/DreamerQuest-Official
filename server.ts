@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import Stripe from "stripe";
 import { fileURLToPath } from "url";
@@ -85,7 +84,8 @@ const dbAdmin = getFirestore(undefined, firebaseConfig.firestoreDatabaseId);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  // Cloud Run / most hosts inject PORT; fall back for local prod runs.
+  const PORT = Number(process.env.PORT) || 8080;
   
   // Lazy init stripe
   let stripeClient: Stripe | null = null;
@@ -752,8 +752,9 @@ async function startServer() {
     }
   });
 
-  // Vite middleware
+  // Vite middleware (dev only — keep `vite` out of the production boot path)
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

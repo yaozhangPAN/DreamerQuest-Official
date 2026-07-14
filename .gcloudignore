@@ -1,0 +1,36 @@
+node_modules
+dist
+build
+.vite
+.git
+.github
+.cursor
+.firebase
+.vercel
+.netlify
+
+.env
+.env.*
+!.env.example
+
+data
+logs
+tmp
+temp
+coverage
+*.log
+*.zip
+dreamerquest_old.zip
+*.md
+!README.md
+
+# Keep firebase-applet-config.json in the build context (do not ignore it).
+# Never bake local secrets beyond that file / public Firebase web config.
+credentials
+secrets
+*credentials*.json
+*service-account*.json
+*serviceAccount*.json
+
+# Explicitly allow (negation after any broad rules)
+!firebase-applet-config.json
