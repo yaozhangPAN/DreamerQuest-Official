@@ -297,7 +297,7 @@ const SubmissionForm: React.FC<SubmissionFormProps> = ({
             {isCoPilotActive && (
               <p>
                 <Sparkles size={12} className="inline mr-1" />
-                <b>Co-Pilot Active:</b> Final XP will be 25% of the rubric score.
+                <b>Co-Pilot Active:</b> Final XP will be 25% of the rubric XP (up to 500 → 125 with Co-Pilot).
               </p>
             )}
           </div>

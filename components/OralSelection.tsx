@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { PlayCircle, ArrowLeft, Star, Clock, Video, BookOpen } from 'lucide-react';
+import { OLEVEL_ORAL_SETS } from '../lib/olevelOralSets';
 
 export type PracticeType = 'O_LEVEL' | 'PSLE';
 
@@ -9,6 +10,7 @@ export interface PracticeSet {
   type: PracticeType;
   title: string;
   description: string;
+  hasEmbeddedVideo?: boolean;
 }
 
 interface OralSelectionProps {
@@ -17,13 +19,7 @@ interface OralSelectionProps {
   onBack: () => void;
 }
 
-const PRACTICES: PracticeSet[] = [
-  { id: 1, type: 'O_LEVEL', title: "Oral Practice 1: Selfies & Social Media", description: "你对自拍并上传到社交媒体有何看法？" },
-  { id: 2, type: 'O_LEVEL', title: "Oral Practice 2: AI in Food Courts", description: "人工智能帮你在食阁找位子，你有什么感受？" },
-  { id: 3, type: 'O_LEVEL', title: "Oral Practice 3: Hungry Ghost Festival", description: "环保创新福物吸引年轻人参与中元节活动" },
-  { id: 4, type: 'O_LEVEL', title: "Oral Practice 4: E-waste Recycling", description: "你是如何处理旧电子设备的？" },
-  { id: 5, type: 'O_LEVEL', title: "Oral Practice 5: Flooding & Climate Change", description: "预防洪灾是每个人的责任。你同意吗？" },
-  { id: 6, type: 'O_LEVEL', title: "Oral Practice 6: Food Rescue App", description: "我们可以如何减少食物浪费？" },
+const PSLE_PRACTICES: PracticeSet[] = [
   { id: 101, type: 'PSLE', title: "PSLE Test 1: Helper in Canteen", description: "食堂里学生主动帮助清洁工阿姨的故事" },
   { id: 102, type: 'PSLE', title: "PSLE Test 2: Saving Resources", description: "在日常生活中，我们应该如何节省资源，保护环境？" },
   { id: 103, type: 'PSLE', title: "PSLE Test 3: Caring for Others", description: "我们应该如何关爱身边的弱势群体？" },
@@ -40,6 +36,17 @@ const PRACTICES: PracticeSet[] = [
   { id: 114, type: 'PSLE', title: "PSLE Test 14: Outdoor Learning", description: "户外学习活动对扩展视野有什么好处？" },
   { id: 115, type: 'PSLE', title: "PSLE Test 15: Saving Water", description: "节约用水的重要性体现在哪里？" },
   { id: 116, type: 'PSLE', title: "PSLE Test 16: More Road Safety", description: "行人应该如何遵守马路规则以确保安全？" },
+];
+
+const PRACTICES: PracticeSet[] = [
+  ...OLEVEL_ORAL_SETS.map((s) => ({
+    id: s.id,
+    type: 'O_LEVEL' as const,
+    title: `Oral ${s.id}: ${s.title}`,
+    description: s.description,
+    hasEmbeddedVideo: s.hasEmbeddedVideo,
+  })),
+  ...PSLE_PRACTICES,
 ];
 
 const OralSelection: React.FC<OralSelectionProps> = ({ onSelect, onStartCustom, onBack }) => {
@@ -65,7 +72,11 @@ const OralSelection: React.FC<OralSelectionProps> = ({ onSelect, onStartCustom, 
 
       <div className="text-center space-y-4">
         <h2 className="text-3xl font-black text-slate-800 tracking-tight">Choose a Practice Set</h2>
-        <p className="text-slate-500 font-medium">Select your level and choose a topic to start your oral examination practice.</p>
+        <p className="text-slate-500 font-medium">
+          {activeTab === 'O_LEVEL'
+            ? `O-Level 高级华文口试：${filteredPractices.length} 套来自 SO YOUNG / 8world 的练习（含口头报告题与自由讨论题）。`
+            : 'Select your level and choose a topic to start your oral examination practice.'}
+        </p>
         
         <div className="flex justify-center gap-4 mt-6">
           <button 
@@ -117,7 +128,7 @@ const OralSelection: React.FC<OralSelectionProps> = ({ onSelect, onStartCustom, 
               </div>
             </div>
             
-            <div className="mt-6 flex items-center justify-between">
+            <div className="mt-6 flex items-center justify-between gap-2">
               <div className="flex items-center gap-1">
                 {[1, 2, 3].map((s) => (
                   <Star key={s} size={14} className="text-amber-400 fill-current" />

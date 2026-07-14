@@ -16,8 +16,41 @@ import {
   generateSpellingAudio,
   evaluateSpellingAnswers,
   evaluateOralPerformance,
-  generateFollowUpQuestion
+  generateFollowUpQuestion,
+  evaluateOralNotes,
+  generateOralAnswerGuide,
+  evaluateOralPracticeAnswer,
+  generateOralPracticeSummary,
+  generateArticleMcqs,
+  markArticleQuizAnswers,
+  consolidateArticleQuizStats,
 } from "./serverGeminiService";
+import {
+  createGroup,
+  deleteGroup,
+  deleteQuiz,
+  getGroupForUser,
+  getQuiz,
+  getRoster,
+  getSubmissionForUser,
+  joinGroupByCode,
+  leaveGroup,
+  listCompletedQuizIdsForUser,
+  listGroups,
+  listQuizzes,
+  listSubmissionsForQuiz,
+  saveQuizClassStats,
+  startArticleQuizRead,
+  submitQuizAnswers,
+  updateQuizQuestions,
+  upsertQuiz,
+} from "./lib/articleQuizStore";
+import type { ArticleQuiz, ArticleQuizClassStats } from "./types";
+import { fetchArticleFromUrl } from "./lib/fetchArticleFromUrl";
+import {
+  ARTICLE_READ_XP,
+  calculateArticleQuizCompletionXp,
+} from "./lib/xpSystem";
 
 const __filenameSaved = typeof import.meta !== "undefined" && import.meta.url
   ? fileURLToPath(import.meta.url)
@@ -106,8 +139,16 @@ async function startServer() {
     res.json({ received: true });
   });
 
-  // Regular JSON parsing for other routes (large limit for base64 image uploads)
-  app.use(express.json({ limit: '50mb' }));
+  // Large limit for base64 image uploads (spelling lists, essays, etc.)
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err?.type === 'entity.too.large') {
+      return res.status(413).json({ error: 'Upload too large. Try fewer or smaller photos.' });
+    }
+    next(err);
+  });
 
   // Gemini AI Endpoints
   app.post("/api/gemini/extract-topic", async (req, res) => {
@@ -236,288 +277,478 @@ async function startServer() {
     }
   });
 
-  // GitHub OAuth & Integration Endpoints
-  app.get("/api/auth/github/url", (req, res) => {
+  app.post("/api/gemini/evaluate-oral-notes", async (req, res) => {
     try {
-      const { uid } = req.query;
-      if (!uid) {
-        return res.status(400).json({ error: "User UID is required" });
+      const { options } = req.body;
+      if (!options?.imageBase64) {
+        return res.status(400).json({ error: "options.imageBase64 is required" });
       }
-      
-      const clientId = process.env.GITHUB_CLIENT_ID;
-      if (!clientId) {
-        return res.status(500).json({ error: "GITHUB_CLIENT_ID is not configured in environment variables" });
-      }
-
-      const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-      const redirectUri = `${baseUrl}/api/auth/github/callback`;
-
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        scope: "read:user,repo",
-        state: uid as string,
-      });
-
-      const authUrl = `https://github.com/login/oauth/authorize?${params.toString()}`;
-      res.json({ url: authUrl });
+      const result = await evaluateOralNotes(options);
+      res.json(result);
     } catch (err: any) {
-      console.error("Error generating GitHub auth URL:", err);
-      res.status(500).json({ error: err.message || "Failed to generate auth URL" });
+      console.error("Error in evaluate-oral-notes endpoint:", err);
+      res.status(500).json({ error: err.message || "Failed to evaluate oral notes" });
     }
   });
 
-  const handleGithubCallback = async (req: any, res: any) => {
-    const { code, state: uid } = req.query;
-    if (!code || !uid) {
-      return res.status(400).send("Authorization code or user state is missing.");
-    }
-
-    const clientId = process.env.GITHUB_CLIENT_ID;
-    const clientSecret = process.env.GITHUB_CLIENT_SECRET;
-
-    if (!clientId || !clientSecret) {
-      return res.status(500).send("GitHub client configuration (GITHUB_CLIENT_ID or GITHUB_CLIENT_SECRET) is missing in environment variables.");
-    }
-
+  app.post("/api/gemini/generate-oral-answer-guide", async (req, res) => {
     try {
-      // 1. Exchange code for access token
-      const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          client_id: clientId,
-          client_secret: clientSecret,
-          code,
-        }),
-      });
-
-      if (!tokenResponse.ok) {
-        throw new Error(`Failed to exchange code: ${tokenResponse.statusText}`);
+      const { options } = req.body;
+      if (!options) {
+        return res.status(400).json({ error: "options is required" });
       }
+      const result = await generateOralAnswerGuide(options);
+      res.json(result);
+    } catch (err: any) {
+      console.error("Error in generate-oral-answer-guide endpoint:", err);
+      res.status(500).json({ error: err.message || "Failed to generate oral answer guide" });
+    }
+  });
 
-      const tokenData = await tokenResponse.json() as any;
-      const accessToken = tokenData.access_token;
-
-      if (!accessToken) {
-        throw new Error(tokenData.error_description || "No access token returned from GitHub. Check if your client secret or ID is correct.");
+  app.post("/api/gemini/evaluate-oral-practice-answer", async (req, res) => {
+    try {
+      const { options } = req.body;
+      if (!options) {
+        return res.status(400).json({ error: "options is required" });
       }
+      const result = await evaluateOralPracticeAnswer(options);
+      res.json(result);
+    } catch (err: any) {
+      console.error("Error in evaluate-oral-practice-answer endpoint:", err);
+      res.status(500).json({ error: err.message || "Failed to evaluate practice answer" });
+    }
+  });
 
-      // 2. Fetch user details from GitHub API
-      const userResponse = await fetch("https://api.github.com/user", {
-        headers: {
-          Authorization: `token ${accessToken}`,
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "DreamerQuest-App",
-        },
-      });
-
-      if (!userResponse.ok) {
-        throw new Error(`Failed to fetch GitHub profile: ${userResponse.statusText}`);
+  app.post("/api/gemini/generate-oral-practice-summary", async (req, res) => {
+    try {
+      const { options } = req.body;
+      if (!options) {
+        return res.status(400).json({ error: "options is required" });
       }
+      const result = await generateOralPracticeSummary(options);
+      res.json(result);
+    } catch (err: any) {
+      console.error("Error in generate-oral-practice-summary endpoint:", err);
+      res.status(500).json({ error: err.message || "Failed to generate practice summary" });
+    }
+  });
 
-      const userProfile = await userResponse.json() as any;
+  app.post("/api/gemini/generate-article-mcqs", async (req, res) => {
+    try {
+      const { article, title, questionCount } = req.body;
+      if (!article || typeof article !== "string" || !article.trim()) {
+        return res.status(400).json({ error: "article is required" });
+      }
+      const result = await generateArticleMcqs({ article, title, questionCount });
+      res.json(result);
+    } catch (err: any) {
+      console.error("Error in generate-article-mcqs endpoint:", err);
+      res.status(500).json({ error: err.message || "Failed to generate MCQs" });
+    }
+  });
 
-      // 3. Save connection details in Firestore
-      await dbAdmin.collection("users").doc(uid as string).set({
-        githubConnection: {
-          username: userProfile.login,
-          avatarUrl: userProfile.avatar_url,
-          accessToken,
-          connectedAt: Date.now()
+  app.get("/api/article-quizzes", async (req, res) => {
+    try {
+      const publishedOnly = req.query.published === "1" || req.query.published === "true";
+      const uid = typeof req.query.uid === "string" ? req.query.uid : "";
+      const groupIdParam = typeof req.query.groupId === "string" ? req.query.groupId : "";
+
+      // Student list: filter by joined group (via uid or explicit groupId).
+      if (publishedOnly && (uid || groupIdParam)) {
+        let groupId: string | null = groupIdParam || null;
+        if (uid && !groupIdParam) {
+          groupId = getGroupForUser(uid)?.id ?? null;
         }
-      }, { merge: true });
-
-      // 4. Return window closure script sending OAUTH_AUTH_SUCCESS to parent/opener
-      res.send(`
-        <html>
-          <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; background: #f8fafc; color: #1e293b; margin: 0;">
-            <div style="text-align: center; background: white; padding: 2.5rem; border-radius: 1.5rem; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); max-width: 400px; margin: 10px;">
-              <h2 style="color: #4f46e5; margin-top: 0; font-size: 1.5rem;">Connected to GitHub Successfully!</h2>
-              <p style="margin-bottom: 1.5rem; font-weight: 500; color: #475569;">You are connected as <strong style="color: #1e293b;">@${userProfile.login}</strong>.</p>
-              <div style="display: inline-block; width: 1.5rem; height: 1.5rem; border: 3px solid #e2e8f0; border-top-color: #4f46e5; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-              <p style="font-size: 0.875rem; color: #64748b; margin-top: 1rem;">This popup window will close automatically...</p>
-            </div>
-            <script>
-              setTimeout(() => {
-                if (window.opener) {
-                  window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS' }, '*');
-                  window.close();
-                } else {
-                  window.location.href = '/';
-                }
-              }, 1500);
-            </script>
-            <style>
-              @keyframes spin { to { transform: rotate(360deg); } }
-            </style>
-          </body>
-        </html>
-      `);
-    } catch (err: any) {
-      console.error("Error in GitHub callback:", err);
-      res.status(500).send(`Authentication failed: ${err.message}`);
-    }
-  };
-
-  app.get("/api/auth/github/callback", handleGithubCallback);
-  app.get("/api/auth/github/callback/", handleGithubCallback);
-
-  app.post("/api/github/disconnect", async (req, res) => {
-    try {
-      const { uid } = req.body;
-      if (!uid) {
-        return res.status(400).json({ error: "User UID is required" });
-      }
-
-      await dbAdmin.collection("users").doc(uid).update({
-        githubConnection: admin.firestore.FieldValue.delete()
-      });
-      res.json({ success: true });
-    } catch (err: any) {
-      console.error("Error in disconnecting GitHub:", err);
-      res.status(500).json({ error: err.message || "Failed to disconnect GitHub" });
-    }
-  });
-
-  app.post("/api/github/sync", async (req, res) => {
-    try {
-      const { uid } = req.body;
-      if (!uid) {
-        return res.status(400).json({ error: "User UID is required" });
-      }
-
-      // 1. Fetch user data from Firestore
-      const userDoc = await dbAdmin.collection("users").doc(uid).get();
-      if (!userDoc.exists) {
-        return res.status(404).json({ error: "User not found" });
-      }
-
-      const userData = userDoc.data();
-      const github = userData?.githubConnection;
-      if (!github || !github.accessToken) {
-        return res.status(400).json({ error: "GitHub account is not connected" });
-      }
-
-      const token = github.accessToken;
-      const username = github.username;
-      const repoName = "DreamerQuest-Portfolio";
-
-      // 2. Check if repo exists
-      const repoCheckResponse = await fetch(`https://api.github.com/repos/${username}/${repoName}`, {
-        headers: {
-          Authorization: `token ${token}`,
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "DreamerQuest-App",
-        },
-      });
-
-      let repoExists = repoCheckResponse.ok;
-
-      // 3. Create repo if it doesn't exist
-      if (!repoExists) {
-        const createRepoResponse = await fetch("https://api.github.com/user/repos", {
-          method: "POST",
-          headers: {
-            Authorization: `token ${token}`,
-            "Content-Type": "application/json",
-            Accept: "application/vnd.github.v3+json",
-            "User-Agent": "DreamerQuest-App",
-          },
-          body: JSON.stringify({
-            name: repoName,
-            description: "My DreamerQuest Creative Writing Portfolio and Learning Journey!",
-            private: false,
-            auto_init: true, // create README automatically
-          }),
+        if (!groupId) {
+          return res.json({ quizzes: [], group: null });
+        }
+        const group = listGroups().find((g) => g.id === groupId) || null;
+        return res.json({
+          quizzes: listQuizzes(true, { groupId }),
+          group,
         });
-
-        if (!createRepoResponse.ok) {
-          const errData = await createRepoResponse.json() as any;
-          throw new Error(errData.message || "Failed to create repository");
-        }
       }
 
-      // 4. Generate the portfolio markdown content from user submissions
-      const submissions = userData?.submissions || [];
-      const stats = {
-        level: userData?.level || 1,
-        totalXp: userData?.totalXp || 0,
-        prizesWonCount: (userData?.prizesWon || []).length,
+      res.json({ quizzes: listQuizzes(publishedOnly) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to list quizzes" });
+    }
+  });
+
+  app.get("/api/article-groups", async (_req, res) => {
+    try {
+      res.json({ groups: listGroups() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to list groups" });
+    }
+  });
+
+  app.post("/api/article-groups", async (req, res) => {
+    try {
+      const { name, code } = req.body || {};
+      if (!name || typeof name !== "string" || !name.trim()) {
+        return res.status(400).json({ error: "name is required" });
+      }
+      const group = createGroup(
+        String(name),
+        typeof code === "string" && code.trim() ? String(code) : undefined,
+      );
+      res.json({ group });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || "Failed to create group" });
+    }
+  });
+
+  app.delete("/api/article-groups/:id", async (req, res) => {
+    try {
+      const ok = deleteGroup(req.params.id);
+      if (!ok) return res.status(404).json({ error: "Group not found" });
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to delete group" });
+    }
+  });
+
+  app.get("/api/article-groups/membership/:uid", async (req, res) => {
+    try {
+      const group = getGroupForUser(String(req.params.uid));
+      res.json({ group });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to load membership" });
+    }
+  });
+
+  app.post("/api/article-groups/join", async (req, res) => {
+    try {
+      const { uid, code } = req.body || {};
+      if (!uid || typeof uid !== "string") {
+        return res.status(400).json({ error: "uid is required" });
+      }
+      if (!code || typeof code !== "string") {
+        return res.status(400).json({ error: "code is required" });
+      }
+      const group = joinGroupByCode(String(uid), String(code));
+      res.json({ group });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || "Failed to join group" });
+    }
+  });
+
+  app.post("/api/article-groups/leave", async (req, res) => {
+    try {
+      const { uid } = req.body || {};
+      if (!uid || typeof uid !== "string") {
+        return res.status(400).json({ error: "uid is required" });
+      }
+      leaveGroup(String(uid));
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to leave group" });
+    }
+  });
+
+  app.get("/api/article-quizzes/progress/:uid", async (req, res) => {
+    try {
+      const completedQuizIds = listCompletedQuizIdsForUser(String(req.params.uid));
+      res.json({ completedQuizIds });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to load progress" });
+    }
+  });
+
+  app.get("/api/article-quizzes/:id", async (req, res) => {
+    try {
+      const quiz = getQuiz(req.params.id);
+      if (!quiz) return res.status(404).json({ error: "Quiz not found" });
+      const hideAnswers = req.query.student === "1" || req.query.student === "true";
+      const uid = typeof req.query.uid === "string" ? req.query.uid : "";
+      if (hideAnswers && uid) {
+        const group = getGroupForUser(uid);
+        if (!quiz.groupId || !group || group.id !== quiz.groupId) {
+          return res.status(403).json({ error: "Join this quiz's group to access it" });
+        }
+      }
+      if (hideAnswers) {
+        const safe = {
+          ...quiz,
+          questions: quiz.questions.map(({ correctOptionId, explanation, ...rest }) => rest),
+        };
+        return res.json({ quiz: safe });
+      }
+      res.json({ quiz });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to get quiz" });
+    }
+  });
+
+  app.post("/api/article-quizzes/fetch-url", async (req, res) => {
+    try {
+      const { url } = req.body;
+      if (!url || typeof url !== "string") {
+        return res.status(400).json({ error: "url is required" });
+      }
+      const result = await fetchArticleFromUrl(url);
+      res.json(result);
+    } catch (err: any) {
+      console.error("Error fetching article URL:", err);
+      res.status(400).json({ error: err.message || "Failed to open article link" });
+    }
+  });
+
+  app.post("/api/article-quizzes", async (req, res) => {
+    try {
+      const { title, article, questions, published, sourceUrl, groupId } = req.body;
+      if (!article?.trim()) return res.status(400).json({ error: "article is required" });
+      const now = Date.now();
+      const quiz: ArticleQuiz = {
+        id: `quiz_${now}_${Math.random().toString(36).slice(2, 8)}`,
+        title: (title || "Untitled Article Quiz").trim(),
+        article: String(article),
+        sourceUrl: sourceUrl ? String(sourceUrl) : undefined,
+        groupId: groupId ? String(groupId) : undefined,
+        questions: Array.isArray(questions) ? questions : [],
+        published: !!published,
+        createdAt: now,
+        updatedAt: now,
       };
+      upsertQuiz(quiz);
+      res.json({ quiz });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to create quiz" });
+    }
+  });
 
-      let mdContent = `# 🌟 My DreamerQuest Creative Writing Portfolio\n\n`;
-      mdContent += `Welcome to my creative writing portfolio and spelling achievements! Backed up automatically from my DreamerQuest learning journey.\n\n`;
-      mdContent += `## 📊 My Achievements\n\n`;
-      mdContent += `- 🏆 **Level:** ${stats.level}\n`;
-      mdContent += `- ✨ **Total Experience Points (XP):** ${stats.totalXp} XP\n`;
-      mdContent += `- 🎁 **Prizes Unlocked:** ${stats.prizesWonCount} Robux Rewards\n\n`;
-      mdContent += `## 📚 Completed Submissions\n\n`;
+  app.put("/api/article-quizzes/:id", async (req, res) => {
+    try {
+      const { title, article, questions, published, sourceUrl, groupId } = req.body;
+      const existing = getQuiz(req.params.id);
+      if (!existing) return res.status(404).json({ error: "Quiz not found" });
+      const updated = updateQuizQuestions(
+        req.params.id,
+        Array.isArray(questions) ? questions : existing.questions,
+        {
+          title: title !== undefined ? String(title) : existing.title,
+          article: article !== undefined ? String(article) : existing.article,
+          published: published !== undefined ? !!published : existing.published,
+          sourceUrl:
+            sourceUrl !== undefined
+              ? sourceUrl
+                ? String(sourceUrl)
+                : undefined
+              : existing.sourceUrl,
+          groupId:
+            groupId !== undefined
+              ? groupId
+                ? String(groupId)
+                : undefined
+              : existing.groupId,
+        },
+      );
+      res.json({ quiz: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to update quiz" });
+    }
+  });
 
-      if (submissions.length === 0) {
-        mdContent += `*No submissions recorded yet. Time to start writing!*\n`;
-      } else {
-        submissions.forEach((sub: any, idx: number) => {
-          const dateStr = new Date(sub.completedAt).toLocaleDateString("en-US", {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-          });
-          mdContent += `### ${idx + 1}. ${sub.name}\n`;
-          mdContent += `- 📝 **Type:** ${sub.type}\n`;
-          mdContent += `- 📅 **Date:** ${dateStr}\n`;
-          mdContent += `- ✨ **XP Earned:** +${sub.xpEarned} XP\n\n`;
+  app.delete("/api/article-quizzes/:id", async (req, res) => {
+    try {
+      const ok = deleteQuiz(req.params.id);
+      if (!ok) return res.status(404).json({ error: "Quiz not found" });
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to delete quiz" });
+    }
+  });
+
+  app.post("/api/article-quizzes/:id/start-read", async (req, res) => {
+    try {
+      const { uid } = req.body;
+      if (!uid) return res.status(400).json({ error: "uid is required" });
+
+      const quiz = getQuiz(req.params.id);
+      if (!quiz) return res.status(404).json({ error: "Quiz not found" });
+      const membershipGroup = getGroupForUser(String(uid));
+      if (!quiz.groupId || !membershipGroup || membershipGroup.id !== quiz.groupId) {
+        return res.status(403).json({ error: "Join this quiz's group to access it" });
+      }
+
+      const existing = getSubmissionForUser(req.params.id, String(uid));
+      if (existing) {
+        return res.json({
+          alreadyCompleted: true,
+          readXp: 0,
+          submission: existing,
         });
       }
 
-      mdContent += `\n*Last synchronized on: ${new Date().toLocaleString()}*\n`;
-
-      // 5. Check if README.md exists in the repo to get its sha for update
-      const fileCheckResponse = await fetch(`https://api.github.com/repos/${username}/${repoName}/contents/README.md`, {
-        headers: {
-          Authorization: `token ${token}`,
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "DreamerQuest-App",
-        },
+      const result = startArticleQuizRead(req.params.id, String(uid));
+      res.json({
+        alreadyCompleted: false,
+        alreadyRead: result.alreadyRead,
+        readXp: result.readXpAwarded ? ARTICLE_READ_XP : 0,
       });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || "Failed to start reading" });
+    }
+  });
 
-      let sha: string | undefined;
-      if (fileCheckResponse.ok) {
-        const fileData = await fileCheckResponse.json() as any;
-        sha = fileData.sha;
+  app.post("/api/article-quizzes/:id/submit", async (req, res) => {
+    try {
+      const { uid, studentName, answers } = req.body;
+      if (!uid || !studentName || !answers) {
+        return res.status(400).json({ error: "uid, studentName, and answers are required" });
+      }
+      const quiz = getQuiz(req.params.id);
+      if (!quiz) return res.status(404).json({ error: "Quiz not found" });
+      if (!quiz.published) return res.status(400).json({ error: "Quiz is not published" });
+
+      const membershipGroup = getGroupForUser(String(uid));
+      if (!quiz.groupId || !membershipGroup || membershipGroup.id !== quiz.groupId) {
+        return res.status(403).json({ error: "Join this quiz's group to access it" });
       }
 
-      // 6. Create or update README.md with portfolio content
-      const putFileResponse = await fetch(`https://api.github.com/repos/${username}/${repoName}/contents/README.md`, {
-        method: "PUT",
-        headers: {
-          Authorization: `token ${token}`,
-          "Content-Type": "application/json",
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "DreamerQuest-App",
-        },
-        body: JSON.stringify({
-          message: "Sync DreamerQuest Writing Portfolio & Achievements",
-          content: Buffer.from(mdContent).toString("base64"),
-          sha,
-        }),
+      if (getSubmissionForUser(req.params.id, String(uid))) {
+        return res.status(409).json({ error: "This account already completed this quiz. Only one attempt per account." });
+      }
+
+      const markPayload = quiz.questions.map((q) => ({
+        id: q.id,
+        prompt: q.prompt,
+        options: q.options,
+        correctOptionId: q.correctOptionId,
+        explanation: q.explanation,
+        studentOptionId: String(answers[q.id] || ''),
+      }));
+
+      const marking = await markArticleQuizAnswers({
+        article: quiz.article,
+        title: quiz.title,
+        questions: markPayload,
       });
 
-      if (!putFileResponse.ok) {
-        const errData = await putFileResponse.json() as any;
-        throw new Error(errData.message || "Failed to update portfolio on GitHub");
+      const submission = submitQuizAnswers({
+        quizId: req.params.id,
+        uid: String(uid),
+        studentName: String(studentName),
+        answers,
+        score: marking.score,
+        maxScore: marking.maxScore || quiz.questions.length,
+        overallFeedback: marking.overallFeedback,
+        questionResults: marking.questionResults,
+      });
+
+      const allCorrect = submission.score === submission.maxScore && submission.maxScore > 0;
+      const xp = calculateArticleQuizCompletionXp({ allCorrect });
+
+      try {
+        await refreshClassStats(req.params.id);
+      } catch (e) {
+        console.warn("Class stats refresh failed (submission still saved):", e);
       }
 
       res.json({
-        success: true,
-        repoUrl: `https://github.com/${username}/${repoName}`,
+        submission,
+        xpAwarded: {
+          completeXp: xp.completeXp,
+          perfectBonusXp: xp.perfectBonusXp,
+          totalXp: xp.totalXp,
+        },
       });
     } catch (err: any) {
-      console.error("Error in GitHub sync:", err);
-      res.status(500).json({ error: err.message || "Failed to sync with GitHub" });
+      console.error("Error submitting article quiz:", err);
+      res.status(400).json({ error: err.message || "Failed to submit" });
+    }
+  });
+
+  async function refreshClassStats(quizId: string): Promise<ArticleQuizClassStats> {
+    const quiz = getQuiz(quizId);
+    if (!quiz) throw new Error("Quiz not found");
+
+    let students: Array<{ uid: string; studentName: string }> = [];
+    try {
+      const snap = await dbAdmin.collection("users").get();
+      students = snap.docs.map((doc) => {
+        const data = doc.data() as { profile?: { name?: string } };
+        return { uid: doc.id, studentName: data.profile?.name || doc.id };
+      });
+    } catch {
+      /* optional */
+    }
+
+    const roster = getRoster(quizId, students);
+    const submissions = listSubmissionsForQuiz(quizId);
+    const scores = submissions.map((s) => s.score);
+    const maxScore = quiz.questions.length || 1;
+    const averageScore = scores.length
+      ? scores.reduce((a, b) => a + b, 0) / scores.length
+      : 0;
+
+    const ai = await consolidateArticleQuizStats({
+      title: quiz.title,
+      questions: quiz.questions.map((q) => ({ id: q.id, prompt: q.prompt })),
+      submissions: submissions.map((s) => ({
+        studentName: s.studentName,
+        score: s.score,
+        maxScore: s.maxScore,
+        questionResults: s.questionResults?.map((r) => ({
+          questionId: r.questionId,
+          isCorrect: r.isCorrect,
+          studentAnswerText: r.studentAnswerText,
+        })),
+      })),
+      unsubmittedNames: roster.unsubmitted.map((u) => u.studentName),
+    });
+
+    const stats: ArticleQuizClassStats = {
+      quizId,
+      totalStudents: roster.submitted.length + roster.unsubmitted.length,
+      submittedCount: roster.submitted.length,
+      unsubmittedCount: roster.unsubmitted.length,
+      averageScore: Math.round(averageScore * 10) / 10,
+      averagePercent: Math.round((averageScore / maxScore) * 100),
+      highestScore: scores.length ? Math.max(...scores) : 0,
+      lowestScore: scores.length ? Math.min(...scores) : 0,
+      questionAccuracy: ai.questionAccuracy || [],
+      aiSummary: ai.aiSummary || '',
+      strengths: ai.strengths || [],
+      weaknesses: ai.weaknesses || [],
+      recommendations: ai.recommendations || [],
+      updatedAt: Date.now(),
+    };
+    return saveQuizClassStats(stats);
+  }
+
+  app.post("/api/article-quizzes/:id/refresh-stats", async (req, res) => {
+    try {
+      const stats = await refreshClassStats(req.params.id);
+      res.json({ classStats: stats });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to refresh stats" });
+    }
+  });
+
+  app.get("/api/article-quizzes/:id/roster", async (req, res) => {
+    try {
+      const quiz = getQuiz(req.params.id);
+      if (!quiz) return res.status(404).json({ error: "Quiz not found" });
+
+      let students: Array<{ uid: string; studentName: string }> = [];
+      try {
+        const snap = await dbAdmin.collection("users").get();
+        students = snap.docs.map((doc) => {
+          const data = doc.data() as { profile?: { name?: string } };
+          return {
+            uid: doc.id,
+            studentName: data.profile?.name || doc.id,
+          };
+        });
+      } catch (e) {
+        console.warn("Could not load users for roster; using submissions only.", e);
+      }
+
+      res.json({ roster: getRoster(req.params.id, students) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to load roster" });
     }
   });
 

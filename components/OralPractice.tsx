@@ -1,8 +1,26 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, ArrowRight, Play, PenTool, Save, Trash2, Info, Timer, Mic, Square, CheckCircle, Loader2, Star, Award, Volume2 } from 'lucide-react';
-import { evaluateOralPerformance, generateFollowUpQuestion, generateSpeech } from '../geminiService';
-import { OralEvaluation } from '../types';
+import { ArrowLeft, ArrowRight, Play, PenTool, Save, Trash2, Info, Timer, Mic, Square, CheckCircle, Loader2, Star, Award, Volume2, Camera, BookOpen, GitBranch, RotateCcw } from 'lucide-react';
+import { getOLevelOralSet } from '../lib/olevelOralSets';
+import {
+  evaluateOralPerformance,
+  generateFollowUpQuestion,
+  generateSpeech,
+  evaluateOralNotes,
+  generateOralAnswerGuide,
+  evaluateOralPracticeAnswer,
+  generateOralPracticeSummary,
+} from '../geminiService';
+import { getSpeechVoices, speakTextWithSystemVoice } from '../lib/systemTtsVoices';
+import { compressDataUrl } from '../lib/imageUtils';
+import {
+  OralEvaluation,
+  OralSessionMode,
+  OralNotesEvaluation,
+  OralAnswerGuide,
+  OralPracticeAnswerFeedback,
+  OralPracticeSummary,
+} from '../types';
 
 // Utility to decode base64 into bytes
 function decodeBase64(base64: string) {
@@ -55,7 +73,17 @@ interface OralPracticeProps {
   youtubeUrl?: string;
 }
 
-type PracticePhase = 'PREPARING' | 'READING_ALOUD' | 'ANSWERING_SUMMARY' | 'ANSWERING_QUESTIONS' | 'EVALUATING' | 'RESULT';
+type PracticePhase =
+  | 'PREPARING'
+  | 'UPLOAD_NOTES'
+  | 'NOTES_FEEDBACK'
+  | 'READING_ALOUD'
+  | 'ANSWERING_SUMMARY'
+  | 'ANSWERING_QUESTIONS'
+  | 'ANSWER_FEEDBACK'
+  | 'EVALUATING'
+  | 'RESULT'
+  | 'PRACTICE_RESULT';
 
 export type PracticeType = 'O_LEVEL' | 'PSLE';
 
@@ -65,69 +93,13 @@ interface PracticeContent {
   videoUrl: string;
   questions: string[];
   readingText?: string;
+  sourceUrl?: string;
+  hasEmbeddedVideo?: boolean;
+  title?: string;
 }
 
 const PRACTICE_SETS: Record<number, PracticeContent> = {
-  1: {
-    type: 'O_LEVEL',
-    mainQuestion: "你对自拍并上传到社交媒体有何看法？",
-    videoUrl: "https://www.youtube.com/embed/mvvfkT_k5Rg?end=94&autoplay=1",
-    questions: [
-      "你听过哪些关于自拍的负面新闻？",
-      "你认为那些自拍是不能容忍的？",
-      "有的人是希望依靠自拍或者点赞，得到他人认同，你认同 these 人的做法吗？"
-    ]
-  },
-  2: {
-    type: 'O_LEVEL',
-    mainQuestion: "如果你去食阁吃饭时，看到视频中的机器人，你会有什么样的感受？",
-    videoUrl: "https://players.brightcove.net/6057984932001/default_default/index.html?videoId=6376827437112&autoplay=true&muted=true",
-    questions: [
-      "如果你去食阁吃饭时，看到视频中的机器人，你会有什么样的感受？",
-      "你觉得食阁引用人工智能科技，有哪些好处呢？",
-      "人工智能的发展会导致许多人失业。谈谈你的看法。"
-    ]
-  },
-  3: {
-    type: 'O_LEVEL',
-    mainQuestion: "看到商家推出这些环保创新的福物来吸引年轻人参与中元节活动，你有什么感受？",
-    videoUrl: "https://players.brightcove.net/6057984932001/default_default/index.html?videoId=6376909932112&autoplay=true&muted=true",
-    questions: [
-      "看到商家推出这些环保创新的福物来吸引年轻人参与中元节活动，你有什么感受？",
-      "年轻人对中元会兴趣不高，你觉得造成这种情况的原因可能有哪些呢？",
-      "年轻人有责任把传统文化传承下去。谈谈你的看法。"
-    ]
-  },
-  4: {
-    type: 'O_LEVEL',
-    mainQuestion: "你是如何处理旧电子设备的？",
-    videoUrl: "https://players.brightcove.net/6057984932001/default_default/index.html?videoId=6363205051112&autoplay=true&muted=true",
-    questions: [
-      "你是如何处理旧电子设备的？",
-      "电子垃圾对环境和社会有哪些影响？",
-      "减少电子垃圾比回收更重要，你同意吗？为什么？"
-    ]
-  },
-  5: {
-    type: 'O_LEVEL',
-    mainQuestion: "预防洪灾是每个人的责任。你同意吗？",
-    videoUrl: "https://players.brightcove.net/6057984932001/default_default/index.html?videoId=6364231583112&autoplay=true&muted=true",
-    questions: [
-      "你本身是否经历过洪灾？为什么洪灾很可怕？",
-      "你认为新加坡人对洪灾有足够的防范意识吗？从哪里可以看出来？",
-      "政府和社区可以采取哪些措施来更好地预防和应对洪灾？"
-    ]
-  },
-  6: {
-    type: 'O_LEVEL',
-    mainQuestion: "我们可以如何减少食物浪费？",
-    videoUrl: "https://players.brightcove.net/6057984932001/default_default/index.html?videoId=6364744317112&autoplay=true&muted=true",
-    questions: [
-      "关于如何减少食物浪费，你提到个人和家庭层面。你可以进一步说明你或你的家人是怎么做的吗？",
-      "视频里提到店家利用剩余食物应用程序来减少食物浪费，你对这个做法有什么看法？",
-      "谈了这么多，减少食物浪费到底为什么那么重要呢？"
-    ]
-  },
+  // O-Level sets are loaded from lib/olevelOralSets.ts (SO YOUNG 8world collection).
   101: {
     type: 'PSLE',
     mainQuestion: "录像中发生了什么事？",
@@ -306,15 +278,46 @@ const PRACTICE_SETS: Record<number, PracticeContent> = {
   }
 };
 
+/** Normalize for comparing oral-report vs free questions. */
+function normalizeOralQuestion(text: string): string {
+  return text.replace(/\s+/g, '').trim().toLowerCase();
+}
+
+/**
+ * Free questions (自由提问) come after the oral report (口头报告).
+ * Never reuse the main video/report question; shuffle like an examiner.
+ */
+function buildExaminerQuestions(content: PracticeContent): string[] {
+  const mainKey = normalizeOralQuestion(content.mainQuestion);
+  const distinct = content.questions.filter(
+    (q) => normalizeOralQuestion(q) !== mainKey,
+  );
+  const pool = distinct.length > 0 ? [...distinct] : [...content.questions];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool;
+}
+
 const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practiceId = 1, youtubeUrl }) => {
+  const olevelSet = getOLevelOralSet(practiceId);
   const content: PracticeContent = youtubeUrl ? {
     type: 'O_LEVEL',
     mainQuestion: "请根据视频内容回答问题。",
     videoUrl: youtubeUrl.replace("watch?v=", "embed/"),
     questions: ["这是视频的主题是什么？", "对于视频内容，你有什么看法？", "你从视频中学到了什么？"],
-    readingText: "" 
-  } : (PRACTICE_SETS[practiceId] || PRACTICE_SETS[1]);
-  const QUESTIONS = content.questions;
+    readingText: "",
+    hasEmbeddedVideo: true,
+  } : olevelSet ? {
+    type: 'O_LEVEL',
+    title: olevelSet.title,
+    mainQuestion: olevelSet.mainQuestion,
+    videoUrl: olevelSet.videoUrl,
+    questions: olevelSet.questions,
+    sourceUrl: olevelSet.sourceUrl,
+    hasEmbeddedVideo: olevelSet.hasEmbeddedVideo,
+  } : (PRACTICE_SETS[practiceId] || PRACTICE_SETS[101]);
 
   const [isStarted, setIsStarted] = useState(false);
   const [phase, setPhase] = useState<PracticePhase>('PREPARING');
@@ -323,7 +326,9 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
   const [isRecording, setIsRecording] = useState(false);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [summaryTranscript, setSummaryTranscript] = useState('');
-  const [answersTranscripts, setAnswersTranscripts] = useState<string[]>(['', '', '']);
+  /** Free questions after oral report — never duplicates mainQuestion. */
+  const [examinerQuestions, setExaminerQuestions] = useState<string[]>([]);
+  const [answersTranscripts, setAnswersTranscripts] = useState<string[]>([]);
   const [readingTranscript, setReadingTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
   const [task1TimeLeft, setTask1TimeLeft] = useState(120); // 2 minutes for Task 1
@@ -335,6 +340,26 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
   const [prepTab, setPrepTab] = useState<'READING' | 'VIDEO'>('READING');
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [useAIVoice, setUseAIVoice] = useState(false);
+  const [sessionMode, setSessionMode] = useState<OralSessionMode>('MOCK_EXAM');
+  const [notesImage, setNotesImage] = useState<string | null>(null);
+  const [notesEvaluation, setNotesEvaluation] = useState<OralNotesEvaluation | null>(null);
+  const [answerGuide, setAnswerGuide] = useState<OralAnswerGuide | null>(null);
+  const [answerFeedback, setAnswerFeedback] = useState<OralPracticeAnswerFeedback | null>(null);
+  const [practiceSummary, setPracticeSummary] = useState<OralPracticeSummary | null>(null);
+  const [feedbackContext, setFeedbackContext] = useState<{ phase: 'ANSWERING_SUMMARY' | 'ANSWERING_QUESTIONS'; questionIndex: number } | null>(null);
+  const [attemptCounts, setAttemptCounts] = useState<Record<string, number>>({});
+  const notesInputRef = useRef<HTMLInputElement>(null);
+
+  const isGuided = sessionMode === 'GUIDED_PRACTICE';
+
+  const getNextPhaseAfterPrep = (): PracticePhase => {
+    if (isGuided) return 'UPLOAD_NOTES';
+    return content.type === 'PSLE' ? 'READING_ALOUD' : 'ANSWERING_SUMMARY';
+  };
+
+  const getNextPhaseAfterNotes = (): PracticePhase => {
+    return content.type === 'PSLE' ? 'READING_ALOUD' : 'ANSWERING_SUMMARY';
+  };
 
   const recognitionRef = useRef<any>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
@@ -345,7 +370,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
       timer = setInterval(() => {
         setPrepTimeLeft(prev => {
           if (prev <= 1) {
-            setPhase(content.type === 'PSLE' ? 'READING_ALOUD' : 'ANSWERING_SUMMARY');
+            setPhase(getNextPhaseAfterPrep());
             return 0;
           }
           return prev - 1;
@@ -356,10 +381,25 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
   }, [isStarted, phase, prepTimeLeft]);
 
   useEffect(() => {
-    if (phase === 'ANSWERING_QUESTIONS') {
-      speakQuestion(QUESTIONS[currentQuestionIndex]);
+    if (phase === 'ANSWERING_QUESTIONS' && examinerQuestions[currentQuestionIndex]) {
+      speakQuestion(examinerQuestions[currentQuestionIndex]);
     }
   }, [phase, currentQuestionIndex]);
+
+  const speakWithSystemVoice = async (text: string) => {
+    if (window.speechSynthesis.getVoices().length === 0) {
+      await getSpeechVoices();
+    }
+
+    speakTextWithSystemVoice(text, {
+      onEnd: () => setIsPlayingAudio(false),
+      onError: (errorType) => {
+        if (errorType !== 'not-allowed') {
+          console.warn('System TTS error:', errorType);
+        }
+      },
+    });
+  };
 
   const speakQuestion = async (text: string) => {
     // Stop any existing audio
@@ -373,25 +413,15 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
     setIsPlayingAudio(true);
     
     if (!useAIVoice) {
-       const utterance = new SpeechSynthesisUtterance(text);
-       utterance.lang = 'zh-CN';
-       utterance.onend = () => setIsPlayingAudio(false);
-       utterance.onerror = () => setIsPlayingAudio(false);
-       window.speechSynthesis.cancel();
-       window.speechSynthesis.speak(utterance);
-       return;
+      await speakWithSystemVoice(text);
+      return;
     }
 
     try {
       const base64 = await generateSpeech(text);
       
       if (base64 === '__BROWSER_TTS__') {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'zh-CN';
-        utterance.onend = () => setIsPlayingAudio(false);
-        utterance.onerror = () => setIsPlayingAudio(false);
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
+        await speakWithSystemVoice(text);
         return;
       }
 
@@ -408,12 +438,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
     } catch (err: any) {
       console.error("Audio playback error:", err);
       // Fallback to browser TTS if decoding fails
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'zh-CN';
-      utterance.onend = () => setIsPlayingAudio(false);
-      utterance.onerror = () => setIsPlayingAudio(false);
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
+      await speakWithSystemVoice(text);
     }
   };
 
@@ -495,12 +520,175 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
 
   const stopRecording = async () => {
     if (recognitionRef.current) {
-      recognitionRef.current.onend = null; // Prevent restart
+      recognitionRef.current.onend = null;
       recognitionRef.current.stop();
     }
     setIsRecording(false);
     setInterimTranscript('');
+
+    if (isGuided && (phase === 'ANSWERING_SUMMARY' || phase === 'ANSWERING_QUESTIONS')) {
+      await evaluateCurrentAnswer();
+      return;
+    }
+
     await handleNext();
+  };
+
+  const loadAnswerGuide = async (notesFeedbackText?: string) => {
+    if (answerGuide) return answerGuide;
+    const guide = await generateOralAnswerGuide({
+      practiceType: content.type || 'O_LEVEL',
+      mainQuestion: content.mainQuestion,
+      questions: examinerQuestions,
+      readingText: content.readingText,
+      notesFeedback: notesFeedbackText,
+    });
+    setAnswerGuide(guide);
+    return guide;
+  };
+
+  const evaluateCurrentAnswer = async () => {
+    setIsProcessing(true);
+    try {
+      const isSummary = phase === 'ANSWERING_SUMMARY';
+      const question = isSummary ? content.mainQuestion : examinerQuestions[currentQuestionIndex];
+      const transcript = isSummary ? summaryTranscript : answersTranscripts[currentQuestionIndex];
+      const attemptKey = isSummary ? 'summary' : `q${currentQuestionIndex}`;
+      const attemptNumber = (attemptCounts[attemptKey] || 0) + 1;
+
+      const feedback = await evaluateOralPracticeAnswer({
+        practiceType: content.type || 'O_LEVEL',
+        questionLabel: isSummary ? '主题回答 / 录像总结' : `问题 ${currentQuestionIndex + 1}`,
+        question,
+        transcript,
+        attemptNumber,
+        isSummary,
+      });
+
+      setAttemptCounts((prev) => ({ ...prev, [attemptKey]: attemptNumber }));
+      setAnswerFeedback(feedback);
+      setFeedbackContext({
+        phase: isSummary ? 'ANSWERING_SUMMARY' : 'ANSWERING_QUESTIONS',
+        questionIndex: currentQuestionIndex,
+      });
+      setPhase('ANSWER_FEEDBACK');
+    } catch (error) {
+      console.error(error);
+      alert('无法评估回答，请重试。');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const retryCurrentAnswer = () => {
+    if (!feedbackContext) return;
+    setAnswerFeedback(null);
+    if (feedbackContext.phase === 'ANSWERING_SUMMARY') {
+      setSummaryTranscript('');
+      setPhase('ANSWERING_SUMMARY');
+    } else {
+      setAnswersTranscripts((prev) => {
+        const next = [...prev];
+        next[feedbackContext.questionIndex] = '';
+        return next;
+      });
+      setCurrentQuestionIndex(feedbackContext.questionIndex);
+      setPhase('ANSWERING_QUESTIONS');
+    }
+  };
+
+  const continueAfterPassedAnswer = async () => {
+    if (!feedbackContext) return;
+    setAnswerFeedback(null);
+
+    if (feedbackContext.phase === 'ANSWERING_SUMMARY') {
+      setPhase('ANSWERING_QUESTIONS');
+      setCurrentQuestionIndex(0);
+      return;
+    }
+
+    if (currentQuestionIndex < examinerQuestions.length - 1) {
+      setCurrentQuestionIndex((prev) => prev + 1);
+      setPhase('ANSWERING_QUESTIONS');
+    } else {
+      await submitGuidedSummary();
+    }
+  };
+
+  const handleNotesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      if (!reader.result) return;
+      try {
+        const compressed = await compressDataUrl(reader.result as string);
+        setNotesImage(compressed);
+      } catch {
+        setNotesImage(reader.result as string);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const submitNotesForEvaluation = async () => {
+    if (!notesImage) return;
+    setIsProcessing(true);
+    try {
+      const base64 = notesImage.includes(',') ? notesImage.split(',')[1] : notesImage;
+      const result = await evaluateOralNotes({
+        imageBase64: base64,
+        practiceType: content.type || 'O_LEVEL',
+        mainQuestion: content.mainQuestion,
+        readingText: content.readingText,
+      });
+      setNotesEvaluation(result);
+      setPhase('NOTES_FEEDBACK');
+    } catch (error) {
+      alert('笔记评估失败，请重试。');
+      console.error(error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const proceedFromNotesFeedback = async () => {
+    setIsProcessing(true);
+    try {
+      await loadAnswerGuide(notesEvaluation?.feedback);
+      setPhase(getNextPhaseAfterNotes());
+    } catch (error) {
+      alert('无法生成答题引导，请重试。');
+      console.error(error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const submitGuidedSummary = async () => {
+    setPhase('EVALUATING');
+    setIsProcessing(true);
+    try {
+      const result = await generateOralPracticeSummary({
+        practiceType: content.type || 'O_LEVEL',
+        mainQuestion: content.mainQuestion,
+        questions: examinerQuestions,
+        summaryTranscript,
+        answersTranscripts,
+        readingTranscript,
+      });
+      setPracticeSummary(result);
+      const passedCount = Object.values(attemptCounts).length;
+      onXpEarned(Math.max(15, passedCount * 10));
+      setPhase('PRACTICE_RESULT');
+    } catch (error) {
+      alert('生成总结失败，请重试。');
+      console.error(error);
+      setPhase('ANSWERING_QUESTIONS');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleNext = async () => {
@@ -521,12 +709,23 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
       setPhase('ANSWERING_QUESTIONS');
       setCurrentQuestionIndex(0);
     } else if (phase === 'ANSWERING_QUESTIONS') {
+      if (isGuided) {
+        setSubQuestionCount(0);
+        setCurrentSubQuestion(null);
+        if (currentQuestionIndex < examinerQuestions.length - 1) {
+          setCurrentQuestionIndex((prev) => prev + 1);
+        } else {
+          await submitGuidedSummary();
+        }
+        return;
+      }
+
       // Check for follow-up if we haven't reached the limit
       if (subQuestionCount < 2) {
         setIsCheckingFollowUp(true);
         try {
           const followUp = await generateFollowUpQuestion(
-            currentSubQuestion || QUESTIONS[currentQuestionIndex],
+            currentSubQuestion || examinerQuestions[currentQuestionIndex],
             answersTranscripts[currentQuestionIndex],
             subQuestionCount
           );
@@ -553,7 +752,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
       setSubQuestionCount(0);
       setCurrentSubQuestion(null);
 
-      if (currentQuestionIndex < QUESTIONS.length - 1) {
+      if (currentQuestionIndex < examinerQuestions.length - 1) {
         setCurrentQuestionIndex(prev => prev + 1);
       } else {
         await submitForEvaluation();
@@ -573,7 +772,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
         mainQuestion: content.mainQuestion,
         summaryTranscript,
         answersTranscripts,
-        questions: QUESTIONS,
+        questions: examinerQuestions,
         readingTranscript,
         readingTextOrigin: content.readingText
       });
@@ -641,6 +840,12 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
   };
 
   const handleStart = () => {
+    const freeQs = buildExaminerQuestions(content);
+    setExaminerQuestions(freeQs);
+    setAnswersTranscripts(freeQs.map(() => ''));
+    setCurrentQuestionIndex(0);
+    setCurrentSubQuestion(null);
+    setSubQuestionCount(0);
     setIsStarted(true);
   };
 
@@ -659,10 +864,30 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
           </div>
           <div className="space-y-2">
             <h2 className="text-3xl font-black text-slate-800">Oral Practice</h2>
-            <p className="text-slate-500">Watch the video stimulus to prepare your response.</p>
+            <p className="text-slate-500">Choose a mode, then watch the video stimulus to prepare.</p>
           </div>
           
           <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+            <div className="space-y-3">
+              <p className="text-xs font-black text-slate-400 uppercase tracking-widest text-left">Select Mode</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  onClick={() => setSessionMode('MOCK_EXAM')}
+                  className={`p-4 rounded-2xl border-2 text-left transition-all ${sessionMode === 'MOCK_EXAM' ? 'border-amber-500 bg-amber-50' : 'border-slate-200 hover:border-slate-300'}`}
+                >
+                  <p className="font-black text-slate-800">模拟考试模式</p>
+                  <p className="text-xs text-slate-500 mt-1">完整考试流程，最后统一评分</p>
+                </button>
+                <button
+                  onClick={() => setSessionMode('GUIDED_PRACTICE')}
+                  className={`p-4 rounded-2xl border-2 text-left transition-all ${sessionMode === 'GUIDED_PRACTICE' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}
+                >
+                  <p className="font-black text-slate-800">练习模式</p>
+                  <p className="text-xs text-slate-500 mt-1">笔记反馈、答题引导、逐题改进</p>
+                </button>
+              </div>
+            </div>
+
             <div className="text-left space-y-4">
               <div className="flex items-start gap-3 p-4 bg-slate-50 rounded-2xl">
                 <div className="bg-indigo-100 p-2 rounded-lg text-indigo-600 shrink-0">
@@ -671,10 +896,21 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                 <div>
                   <h4 className="font-bold text-slate-800 text-sm">How it works</h4>
                   <p className="text-slate-600 text-xs leading-relaxed">
-                    1. Click "Start Practice" to begin.<br/>
-                    2. You have 10 minutes to watch the stimulus.<br/>
-                    3. After 10 minutes (or when you're ready), the answering phase begins.<br/>
-                    4. Summarize the video first, then answer 3 questions by speaking.
+                    {sessionMode === 'MOCK_EXAM' ? (
+                      <>
+                        1. Click &quot;Start Practice&quot; to begin.<br/>
+                        2. You have 10 minutes to watch the stimulus.<br/>
+                        3. After preparation, complete the oral exam flow.<br/>
+                        4. Receive a final score and examiner feedback.
+                      </>
+                    ) : (
+                      <>
+                        1. Watch the video and take notes on paper.<br/>
+                        2. Upload a photo of your notes for AI feedback.<br/>
+                        3. Get a mind-map guide and useful phrases before answering.<br/>
+                        4. Retry each answer until it passes, then see model answers.
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
@@ -710,9 +946,202 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
           </div>
         </div>
         <div className="space-y-2">
-          <h2 className="text-2xl font-black text-slate-800">Evaluating Performance...</h2>
-          <p className="text-slate-500 font-medium">Our AI examiner is marking your summary and responses based on the rubric.</p>
+          <h2 className="text-2xl font-black text-slate-800">
+            {isGuided ? 'Generating Learning Summary...' : 'Evaluating Performance...'}
+          </h2>
+          <p className="text-slate-500 font-medium">
+            {isGuided
+              ? 'AI tutor is preparing model answers and vocabulary summary.'
+              : 'Our AI examiner is marking your summary and responses based on the rubric.'}
+          </p>
         </div>
+      </div>
+    );
+  }
+
+  if (phase === 'UPLOAD_NOTES') {
+    return (
+      <div className="max-w-xl mx-auto py-12 space-y-8 animate-in fade-in duration-500">
+        <div className="text-center space-y-3">
+          <div className="bg-emerald-100 w-20 h-20 rounded-3xl flex items-center justify-center mx-auto text-emerald-600">
+            <Camera size={36} />
+          </div>
+          <h2 className="text-3xl font-black text-slate-800">Upload Your Notes</h2>
+          <p className="text-slate-500">Take a photo of the notes you wrote while watching the video.</p>
+        </div>
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+          {notesImage ? (
+            <img src={notesImage} alt="Notes" className="w-full rounded-2xl border border-slate-200" />
+          ) : (
+            <button
+              onClick={() => notesInputRef.current?.click()}
+              className="w-full aspect-[4/3] border-4 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-slate-400 hover:border-emerald-300 hover:bg-emerald-50/30 transition-all"
+            >
+              <Camera size={40} />
+              <span className="font-black mt-3">TAKE / UPLOAD PHOTO</span>
+            </button>
+          )}
+          <input ref={notesInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleNotesUpload} />
+          <div className="flex gap-3">
+            {notesImage && (
+              <button onClick={() => setNotesImage(null)} className="flex-1 py-4 border-2 border-slate-200 rounded-2xl font-bold text-slate-500">
+                RETAKE
+              </button>
+            )}
+            <button
+              disabled={!notesImage || isProcessing}
+              onClick={submitNotesForEvaluation}
+              className="flex-1 py-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 text-white rounded-2xl font-black"
+            >
+              {isProcessing ? 'ANALYSING...' : 'SUBMIT NOTES'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'NOTES_FEEDBACK' && notesEvaluation) {
+    return (
+      <div className="max-w-2xl mx-auto py-8 space-y-6 animate-in fade-in duration-500">
+        <div className="text-center space-y-2">
+          <h2 className="text-3xl font-black text-slate-800">Notes Feedback</h2>
+          <p className="text-slate-500">Review your note-taking before answering.</p>
+        </div>
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+          <div className="flex gap-4">
+            <div className="flex-1 bg-indigo-50 p-4 rounded-2xl text-center">
+              <p className="text-xs font-black text-indigo-400 uppercase">Score</p>
+              <p className="text-3xl font-black text-indigo-700">{notesEvaluation.score}/10</p>
+            </div>
+            <div className="flex-1 bg-emerald-50 p-4 rounded-2xl text-center">
+              <p className="text-xs font-black text-emerald-400 uppercase">Organized</p>
+              <p className="text-lg font-black text-emerald-700">{notesEvaluation.isOrganized ? '✓ Yes' : '✗ Needs work'}</p>
+            </div>
+            <div className="flex-1 bg-amber-50 p-4 rounded-2xl text-center">
+              <p className="text-xs font-black text-amber-400 uppercase">Complete</p>
+              <p className="text-lg font-black text-amber-700">{notesEvaluation.isComplete ? '✓ Yes' : '✗ Needs work'}</p>
+            </div>
+          </div>
+          <p className="text-slate-700 leading-relaxed">{notesEvaluation.feedback}</p>
+          {notesEvaluation.strengths.length > 0 && (
+            <div>
+              <h4 className="font-black text-emerald-700 mb-2">Strengths</h4>
+              <ul className="list-disc list-inside text-slate-600 space-y-1">
+                {notesEvaluation.strengths.map((s, i) => <li key={i}>{s}</li>)}
+              </ul>
+            </div>
+          )}
+          {notesEvaluation.improvements.length > 0 && (
+            <div>
+              <h4 className="font-black text-amber-700 mb-2">Improvements</h4>
+              <ul className="list-disc list-inside text-slate-600 space-y-1">
+                {notesEvaluation.improvements.map((s, i) => <li key={i}>{s}</li>)}
+              </ul>
+            </div>
+          )}
+          <button
+            disabled={isProcessing}
+            onClick={proceedFromNotesFeedback}
+            className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black"
+          >
+            {isProcessing ? 'PREPARING GUIDE...' : 'START ANSWERING'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'ANSWER_FEEDBACK' && answerFeedback) {
+    return (
+      <div className="max-w-2xl mx-auto py-8 space-y-6 animate-in fade-in duration-500">
+        <div className="text-center space-y-2">
+          <h2 className="text-3xl font-black text-slate-800">Answer Feedback</h2>
+          <p className={`font-bold ${answerFeedback.passed ? 'text-emerald-600' : 'text-amber-600'}`}>
+            {answerFeedback.passed ? '✓ Passed — good job!' : 'Keep trying — you can do better!'}
+          </p>
+        </div>
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+          <div className="text-center">
+            <span className="text-4xl font-black text-indigo-600">{answerFeedback.score}</span>
+            <span className="text-slate-400 font-bold"> / 10</span>
+          </div>
+          <p className="text-slate-700 leading-relaxed">{answerFeedback.feedback}</p>
+          {answerFeedback.improvements.length > 0 && (
+            <ul className="list-disc list-inside text-slate-600 space-y-1">
+              {answerFeedback.improvements.map((item, i) => <li key={i}>{item}</li>)}
+            </ul>
+          )}
+          {answerFeedback.suggestedRevision && (
+            <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100">
+              <p className="text-xs font-black text-indigo-400 uppercase mb-2">Suggested revision</p>
+              <p className="text-indigo-900">{answerFeedback.suggestedRevision}</p>
+            </div>
+          )}
+          <div className="flex gap-3">
+            {!answerFeedback.passed && (
+              <button onClick={retryCurrentAnswer} className="flex-1 py-4 border-2 border-amber-300 text-amber-700 rounded-2xl font-black flex items-center justify-center gap-2">
+                <RotateCcw size={18} /> TRY AGAIN
+              </button>
+            )}
+            {answerFeedback.passed && (
+              <button onClick={continueAfterPassedAnswer} className="flex-1 py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black">
+                CONTINUE
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'PRACTICE_RESULT' && practiceSummary) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-8 duration-700">
+        <div className="bg-gradient-to-br from-emerald-600 to-teal-700 rounded-[2.5rem] p-10 text-white text-center">
+          <BookOpen size={48} className="mx-auto mb-4 opacity-90" />
+          <h2 className="text-4xl font-black">Practice Complete!</h2>
+          <p className="mt-2 opacity-90">Here are model answers and useful language for this topic.</p>
+        </div>
+        <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm space-y-4">
+          <h3 className="text-xl font-black text-slate-800">Overall Feedback</h3>
+          <p className="text-slate-600 leading-relaxed whitespace-pre-wrap">{practiceSummary.overallFeedback}</p>
+        </div>
+        <div className="bg-indigo-50 p-8 rounded-[2rem] border border-indigo-100 space-y-4">
+          <h3 className="text-xl font-black text-indigo-900">Model Answer (主题回答)</h3>
+          <p className="text-indigo-800 leading-relaxed whitespace-pre-wrap">{practiceSummary.modelAnswer}</p>
+        </div>
+        {practiceSummary.modelAnswersByQuestion?.map((ans, i) => (
+          <div key={i} className="bg-slate-50 p-6 rounded-2xl border border-slate-200">
+            <h4 className="font-black text-slate-700 mb-2">Q{i + 1}: {examinerQuestions[i]}</h4>
+            <p className="text-slate-600 whitespace-pre-wrap">{ans}</p>
+          </div>
+        ))}
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="bg-emerald-50 p-6 rounded-2xl border border-emerald-100">
+            <h3 className="font-black text-emerald-900 mb-3">Useful Phrases 词语</h3>
+            <ul className="list-disc list-inside text-emerald-800 space-y-1">
+              {practiceSummary.usefulPhrases.map((p, i) => <li key={i}>{p}</li>)}
+            </ul>
+          </div>
+          <div className="bg-amber-50 p-6 rounded-2xl border border-amber-100">
+            <h3 className="font-black text-amber-900 mb-3">Useful Sentences 句子</h3>
+            <ul className="list-disc list-inside text-amber-800 space-y-1">
+              {practiceSummary.usefulSentences.map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+          </div>
+        </div>
+        {practiceSummary.sentencePatterns?.length > 0 && (
+          <div className="bg-violet-50 p-6 rounded-2xl border border-violet-100">
+            <h3 className="font-black text-violet-900 mb-3">Sentence Patterns 句式</h3>
+            <ul className="list-disc list-inside text-violet-800 space-y-2">
+              {practiceSummary.sentencePatterns.map((p, i) => <li key={i}>{p}</li>)}
+            </ul>
+          </div>
+        )}
+        <button onClick={onDone} className="w-full py-5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-lg">
+          RETURN TO DASHBOARD
+        </button>
       </div>
     );
   }
@@ -729,7 +1158,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
             <h2 className="text-4xl font-black tracking-tight">Practice Complete!</h2>
             <div className="flex justify-center items-baseline gap-2">
               <span className="text-6xl font-black tracking-tighter">{evaluation.totalMarks}</span>
-              <span className="text-2xl font-bold opacity-70">/ {evaluation.maxMarks || 30} Marks</span>
+              <span className="text-2xl font-bold opacity-70">/ {evaluation.maxMarks || 40} Marks</span>
             </div>
             <div className="bg-white/10 backdrop-blur-md inline-flex items-center gap-2 px-6 py-2 rounded-full border border-white/20">
               <Star size={18} className="text-amber-400 fill-current" />
@@ -790,8 +1219,8 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
   }
 
   return (
-    <div className="w-full max-w-6xl mx-auto h-[calc(100vh-12rem)] flex flex-col gap-6 animate-in slide-in-from-bottom-8 duration-700">
-      <div className="flex justify-between items-center">
+    <div className="w-full max-w-6xl mx-auto h-[calc(100vh-12rem)] flex flex-col gap-4 animate-in slide-in-from-bottom-8 duration-700">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <button 
           onClick={() => setIsStarted(false)} 
           className="text-slate-400 hover:text-slate-600 font-bold flex items-center gap-2 transition-colors"
@@ -799,7 +1228,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
           <ArrowLeft size={20} /> EXIT PRACTICE
         </button>
         
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
           {phase === 'PREPARING' && (
             <div className={`px-4 py-1.5 rounded-full font-black text-sm flex items-center gap-2 ${prepTimeLeft < 60 ? 'bg-rose-100 text-rose-600 animate-pulse' : 'bg-indigo-100 text-indigo-700'}`}>
               <Timer size={16} />
@@ -809,21 +1238,27 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
           
           <div className="bg-amber-100 px-4 py-1.5 rounded-full text-amber-700 font-black text-sm flex items-center gap-2">
             <Play size={14} fill="currentColor" />
-            {phase === 'PREPARING' ? 'PREPARATION PHASE' : 'ANSWERING PHASE'}
+            {isGuided ? '练习模式' : '模拟考试'} · {phase === 'PREPARING' ? 'PREPARATION' : 'ANSWERING'}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 hidden sm:inline">Voice</span>
+            <div className="flex bg-slate-200 p-1 rounded-xl">
+              <button
+                onClick={() => setUseAIVoice(false)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${!useAIVoice ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+              >
+                SYSTEM
+              </button>
+              <button
+                onClick={() => setUseAIVoice(true)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${useAIVoice ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+              >
+                AI
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-
-      <div className="flex justify-end pr-4">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input 
-            type="checkbox" 
-            checked={useAIVoice} 
-            onChange={(e) => setUseAIVoice(e.target.checked)} 
-            className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-          />
-          <span className="text-sm font-medium text-slate-600">Use High-Quality AI Voice (Slower but natural)</span>
-        </label>
       </div>
 
       <div className="flex-1 flex gap-6 min-h-0">
@@ -831,8 +1266,8 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
         <div className="flex-1 bg-white rounded-3xl overflow-hidden shadow-2xl border border-slate-200 relative flex flex-col">
           {phase === 'PREPARING' ? (
             <>
-              <div className="bg-indigo-600 p-4 text-white flex justify-between items-center">
-                <div>
+              <div className="bg-indigo-600 p-4 text-white flex flex-wrap justify-between items-center gap-3">
+                <div className="min-w-0 flex-1">
                   <p className="text-xs font-black uppercase tracking-widest opacity-70 mb-1">
                     {content.type === 'PSLE' ? 'Topic Overview' : 'Main Question'}
                   </p>
@@ -841,7 +1276,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                   </p>
                 </div>
                 {content.type === 'PSLE' && (
-                  <div className="flex bg-indigo-700/50 p-1 rounded-xl">
+                  <div className="flex bg-indigo-700/50 p-1 rounded-xl shrink-0">
                     <button
                       onClick={() => setPrepTab('READING')}
                       className={`px-4 py-2 rounded-lg text-sm font-bold transition-colors ${prepTab === 'READING' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-100 hover:text-white'}`}
@@ -858,7 +1293,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                 )}
               </div>
               {content.type === 'PSLE' ? (
-                <div className="flex-1 flex flex-col overflow-hidden bg-slate-50 relative">
+                <div className="flex-1 flex flex-col overflow-hidden bg-slate-50 relative min-h-0">
                   {prepTab === 'READING' ? (
                     <div className="flex-1 p-8 overflow-y-auto animate-in fade-in duration-300">
                       <div className="max-w-2xl mx-auto bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
@@ -875,8 +1310,8 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                       </div>
                     </div>
                   ) : (
-                    <div className="flex-1 flex flex-col h-full animate-in fade-in duration-300 relative">
-                      <div className="bg-slate-50 p-3 border-b border-slate-200 flex justify-between items-center z-10">
+                    <div className="flex-1 flex flex-col h-full animate-in fade-in duration-300 relative min-h-0">
+                      <div className="bg-slate-50 p-3 border-b border-slate-200 flex justify-between items-center z-10 shrink-0">
                         <button 
                           onClick={() => setPrepTab('READING')} 
                           className="text-slate-500 hover:text-indigo-600 font-bold flex items-center gap-2 text-sm transition-colors"
@@ -887,10 +1322,11 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                         <div className="w-24"></div>
                       </div>
                       <iframe 
-                        className="flex-1 w-full h-full"
+                        className="flex-1 w-full min-h-0"
                         src={content.videoUrl} 
                         title="Oral Stimulus Video"
                         frameBorder="0"
+                        allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                         allowFullScreen
                       ></iframe>
                     </div>
@@ -898,13 +1334,22 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                 </div>
               ) : (
                 <iframe 
-                  className="flex-1 w-full"
+                  className="flex-1 w-full min-h-0"
                   src={content.videoUrl} 
                   title="Oral Stimulus Video"
                   frameBorder="0"
+                  allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                   allowFullScreen
                 ></iframe>
               )}
+              <div className="shrink-0 border-t border-slate-100 bg-white px-4 py-3 flex justify-end">
+                <button 
+                  onClick={() => setPhase(getNextPhaseAfterPrep())}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl font-black shadow-lg shadow-indigo-200 transition-all flex items-center gap-2"
+                >
+                  {isGuided ? 'UPLOAD NOTES' : `GO TO ${content.type === 'PSLE' ? 'READING ALOUD' : 'ANSWERING'}`} <Play size={18} fill="currentColor" />
+                </button>
+              </div>
             </>
           ) : phase === 'READING_ALOUD' ? (
             <div className="flex-1 overflow-y-auto">
@@ -958,7 +1403,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                 
                 <div className="space-y-4">
                   <h3 className="text-xs font-black text-indigo-500 uppercase tracking-widest">
-                    {phase === 'ANSWERING_SUMMARY' ? (content.type === 'PSLE' ? 'Part 2: Video Conversation 录像会话' : 'Task 1: Main Response') : `Task 2: Question ${currentQuestionIndex + 1}`}
+                    {phase === 'ANSWERING_SUMMARY' ? (content.type === 'PSLE' ? 'Part 2: Video Conversation 录像会话' : '第一部分：口头报告') : (content.type === 'PSLE' ? `Task 2: Question ${currentQuestionIndex + 1}` : `第二部分：讨论 · 问题 ${currentQuestionIndex + 1}`)}
                   </h3>
                   <p className="text-3xl font-black text-slate-800 leading-tight">
                     {phase === 'ANSWERING_SUMMARY' 
@@ -967,7 +1412,7 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
                   </p>
                   {phase === 'ANSWERING_QUESTIONS' && (
                     <button 
-                      onClick={() => speakQuestion(currentSubQuestion || QUESTIONS[currentQuestionIndex])}
+                      onClick={() => speakQuestion(currentSubQuestion || examinerQuestions[currentQuestionIndex])}
                       disabled={isPlayingAudio}
                       className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-full text-xs font-black transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
@@ -1026,18 +1471,38 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
               </div>
             </div>
           )}
-          
-          {phase === 'PREPARING' && (
-            <div className="absolute bottom-6 right-6 z-20">
-              <button 
-                onClick={() => setPhase(content.type === 'PSLE' ? 'READING_ALOUD' : 'ANSWERING_SUMMARY')}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl font-black shadow-xl shadow-indigo-200 transition-all flex items-center gap-2 transform hover:-translate-y-1"
-              >
-                GO TO {content.type === 'PSLE' ? 'READING ALOUD' : 'ANSWERING'} <Play size={18} fill="currentColor" />
-              </button>
-            </div>
-          )}
         </div>
+
+        {isGuided && answerGuide && (phase === 'ANSWERING_SUMMARY' || phase === 'ANSWERING_QUESTIONS' || phase === 'READING_ALOUD') && (
+          <div className="w-80 shrink-0 bg-white rounded-3xl border border-slate-200 shadow-lg overflow-hidden flex flex-col max-h-full hidden lg:flex">
+            <div className="bg-emerald-600 p-4 text-white">
+              <div className="flex items-center gap-2 font-black text-sm">
+                <GitBranch size={16} /> 答题引导
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Mind Map 思维导图</p>
+                <pre className="text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">{answerGuide.mindMapOutline}</pre>
+              </div>
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Useful Phrases 词语</p>
+                <ul className="list-disc list-inside text-slate-600 space-y-1">
+                  {answerGuide.usefulPhrases.map((p, i) => <li key={i}>{p}</li>)}
+                </ul>
+              </div>
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Useful Sentences 句子</p>
+                <ul className="list-disc list-inside text-slate-600 space-y-1">
+                  {answerGuide.usefulSentences.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+              <div className="bg-amber-50 p-3 rounded-xl border border-amber-100 text-amber-900 text-xs leading-relaxed">
+                {answerGuide.tips}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

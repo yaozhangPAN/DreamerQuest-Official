@@ -1,7 +1,7 @@
 
-import React, { useState } from 'react';
+import React from 'react';
 import { UserStats } from '../types';
-import { Trophy, Star, Gift, TrendingUp, Zap, Mic, Send, PlayCircle, Github, RefreshCw, CheckCircle, ExternalLink, AlertCircle } from 'lucide-react';
+import { Trophy, Star, Gift, TrendingUp, Zap, Mic, Send, PlayCircle, BookOpen } from 'lucide-react';
 
 interface DashboardProps {
   stats: UserStats;
@@ -10,11 +10,11 @@ interface DashboardProps {
   onContinueSpelling: () => void;
   onShowHistory: () => void;
   onStartOral: () => void;
-  uid: string;
-  onRefreshStats: () => void;
+  onStartArticleQuiz: () => void;
+  isAdmin?: boolean;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ stats, onStart, onStartSpelling, onContinueSpelling, onShowHistory, onStartOral, uid, onRefreshStats }) => {
+const Dashboard: React.FC<DashboardProps> = ({ stats, onStart, onStartSpelling, onContinueSpelling, onShowHistory, onStartOral, onStartArticleQuiz, isAdmin }) => {
   const currentLevelXp = stats.totalXp % 1000;
   const progressPercent = (currentLevelXp / 1000) * 100;
   const nextPrizeLevel = Math.ceil((stats.level + 0.1) / 10) * 10;
@@ -22,78 +22,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onStart, onStartSpelling, 
 
   const incompleteSpellingCount = stats.activeSpellingSessions.filter(s => !s.isCompleted).length;
   const submissionsCount = stats.submissions?.length || 0;
-
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<{ success: boolean; repoUrl?: string; error?: string } | null>(null);
-  const [isDisconnecting, setIsDisconnecting] = useState(false);
-
-  const handleConnectGithub = async () => {
-    try {
-      const response = await fetch(`/api/auth/github/url?uid=${uid}`);
-      if (!response.ok) {
-        throw new Error('Failed to get GitHub authorize URL');
-      }
-      const { url } = await response.json();
-
-      const width = 600;
-      const height = 700;
-      const left = window.screen.width / 2 - width / 2;
-      const top = window.screen.height / 2 - height / 2;
-      
-      const popup = window.open(
-        url,
-        'github_oauth_popup',
-        `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`
-      );
-
-      if (!popup) {
-        alert('Popup was blocked! Please enable popups to connect to GitHub.');
-      }
-    } catch (error: any) {
-      console.error('Error connecting to GitHub:', error);
-      alert('Error connecting to GitHub: ' + error.message);
-    }
-  };
-
-  const handleDisconnectGithub = async () => {
-    if (!window.confirm("Are you sure you want to disconnect your GitHub account?")) return;
-    setIsDisconnecting(true);
-    try {
-      const response = await fetch('/api/github/disconnect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid })
-      });
-      if (!response.ok) throw new Error('Failed to disconnect');
-      onRefreshStats();
-      setSyncResult(null);
-    } catch (error: any) {
-      alert('Error disconnecting: ' + error.message);
-    } finally {
-      setIsDisconnecting(false);
-    }
-  };
-
-  const handleSyncPortfolio = async () => {
-    setIsSyncing(true);
-    setSyncResult(null);
-    try {
-      const response = await fetch('/api/github/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid })
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to sync');
-      }
-      setSyncResult({ success: true, repoUrl: data.repoUrl });
-    } catch (error: any) {
-      setSyncResult({ success: false, error: error.message });
-    } finally {
-      setIsSyncing(false);
-    }
-  };
 
   const getRank = (level: number) => {
     if (level < 5) return "Novice Narrator";
@@ -178,6 +106,16 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onStart, onStartSpelling, 
             <PlayCircle size={28} />
           </div>
           ORAL PRACTICE
+        </button>
+
+        <button 
+          onClick={onStartArticleQuiz}
+          className="bg-amber-500 hover:bg-amber-600 text-white font-black text-xl py-8 rounded-[2.5rem] shadow-xl shadow-amber-100 transition-all transform hover:-translate-y-1 active:scale-95 flex flex-col items-center gap-3 group"
+        >
+          <div className="bg-white/20 p-3 rounded-[1.5rem] group-hover:scale-110 transition-transform">
+            <BookOpen size={28} />
+          </div>
+          {isAdmin ? 'ARTICLE QUIZ ADMIN' : 'ARTICLE QUIZZES'}
         </button>
       </div>
 
@@ -267,115 +205,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onStart, onStartSpelling, 
           </div>
         </div>
       )}
-
-      {/* GitHub Portfolio Integration */}
-      <div id="github-portfolio-card" className="bg-slate-900 text-white p-8 md:p-10 rounded-[2.5rem] shadow-2xl relative overflow-hidden group">
-        <div className="absolute -top-12 -right-12 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl"></div>
-        <div className="absolute bottom-4 right-4 text-slate-800 opacity-20 pointer-events-none">
-          <Github size={120} />
-        </div>
-        
-        <div className="relative z-10">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="bg-indigo-600/30 p-2.5 rounded-2xl text-indigo-400">
-              <Github size={24} />
-            </div>
-            <h3 className="text-2xl font-black text-white tracking-tight">GitHub Creative Writing Portfolio</h3>
-          </div>
-          
-          <p className="text-slate-400 font-medium max-w-2xl mb-8 leading-relaxed">
-            Connect your GitHub account to automatically compile and back up your creative essay submissions, 
-            spelling logs, and performance marks into a beautiful markdown portfolio repository (**DreamerQuest-Portfolio**)!
-          </p>
-
-          {stats.githubConnection ? (
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-800/60 backdrop-blur-md p-6 rounded-3xl border border-slate-700/50">
-                <div className="flex items-center gap-4">
-                  <img 
-                    src={stats.githubConnection.avatarUrl} 
-                    alt="GitHub Avatar" 
-                    className="w-14 h-14 rounded-full border-2 border-indigo-500"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div>
-                    <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">CONNECTED ACCOUNT</p>
-                    <p className="font-bold text-lg text-white">@{stats.githubConnection.username}</p>
-                    <p className="text-xs text-slate-400">Connected on {new Date(stats.githubConnection.connectedAt).toLocaleDateString()}</p>
-                  </div>
-                </div>
-                
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleSyncPortfolio}
-                    disabled={isSyncing}
-                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 text-white px-5 py-3 rounded-2xl text-sm font-black transition-all shadow-lg active:scale-95"
-                  >
-                    {isSyncing ? (
-                      <>
-                        <RefreshCw size={18} className="animate-spin" />
-                        <span>SYNCING...</span>
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw size={18} />
-                        <span>SYNC PORTFOLIO</span>
-                      </>
-                    )}
-                  </button>
-                  
-                  <button
-                    onClick={handleDisconnectGithub}
-                    disabled={isDisconnecting}
-                    className="bg-transparent hover:bg-slate-700/50 text-slate-300 border border-slate-700 px-5 py-3 rounded-2xl text-sm font-bold transition-all"
-                  >
-                    Disconnect
-                  </button>
-                </div>
-              </div>
-
-              {syncResult && (
-                <div className={`p-5 rounded-2xl border flex items-start gap-3 animate-in fade-in duration-300 ${syncResult.success ? 'bg-emerald-950/40 border-emerald-800/40 text-emerald-300' : 'bg-rose-950/40 border-rose-800/40 text-rose-300'}`}>
-                  {syncResult.success ? (
-                    <>
-                      <CheckCircle className="text-emerald-400 shrink-0 mt-0.5" size={20} />
-                      <div className="flex-1">
-                        <p className="font-bold text-sm">Successfully Synchronized!</p>
-                        <p className="text-xs text-slate-400 mt-1 mb-3">All your writing achievements are published to your repository.</p>
-                        <a 
-                          href={syncResult.repoUrl} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-xl text-xs font-black transition-colors"
-                        >
-                          <span>VIEW REPOSITORY</span>
-                          <ExternalLink size={12} />
-                        </a>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <AlertCircle className="text-rose-400 shrink-0 mt-0.5" size={20} />
-                      <div>
-                        <p className="font-bold text-sm">Synchronization Failed</p>
-                        <p className="text-xs text-slate-400 mt-1">{syncResult.error}</p>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <button
-              onClick={handleConnectGithub}
-              className="flex items-center gap-2 bg-white hover:bg-slate-100 text-slate-900 px-6 py-4 rounded-3xl font-black text-sm tracking-wide transition-all shadow-xl hover:shadow-indigo-500/10 hover:scale-[1.02] active:scale-95"
-            >
-              <Github size={20} />
-              <span>CONNECT GITHUB ACCOUNT</span>
-            </button>
-          )}
-        </div>
-      </div>
     </div>
   );
 };

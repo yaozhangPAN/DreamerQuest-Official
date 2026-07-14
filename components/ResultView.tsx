@@ -1,8 +1,7 @@
-
 import React from 'react';
 import { EvaluationResult } from '../types';
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } from 'recharts';
-import { CheckCircle2, Trophy, ArrowRight, Zap } from 'lucide-react';
+import { CheckCircle2, Trophy, ArrowRight, Gift } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 interface ResultViewProps {
@@ -19,8 +18,8 @@ const ResultView: React.FC<ResultViewProps> = ({ result, onDone }) => {
     { subject: 'Voice', value: result.scores.voice },
   ];
 
-  // Fix: Directly sum numeric scores to avoid TypeScript "unknown" type error with Object.values().reduce()
   const totalScore = result.scores.idea + result.scores.structure + result.scores.content + result.scores.language + result.scores.voice;
+  const maxXpFromRubric = totalScore * 5;
 
   return (
     <div className="max-w-3xl mx-auto space-y-8 animate-in zoom-in duration-500">
@@ -29,15 +28,18 @@ const ResultView: React.FC<ResultViewProps> = ({ result, onDone }) => {
           <CheckCircle2 size={48} />
         </div>
         <h2 className="text-4xl font-black text-slate-800">Homework Evaluated!</h2>
-        <div className="flex items-center justify-center gap-2">
+        <div className="flex flex-wrap items-center justify-center gap-2">
           <div className="bg-amber-100 text-amber-700 px-4 py-1.5 rounded-full font-black text-sm flex items-center gap-2">
             <Trophy size={16} />
-            SCORE: {totalScore}/100
+            RUBRIC: {totalScore}/100
           </div>
-          {result.bonusApplied && (
-            <div className="bg-indigo-100 text-indigo-700 px-4 py-1.5 rounded-full font-black text-sm flex items-center gap-2">
-              <Zap size={16} />
-              +10% BONUS
+          <div className="bg-indigo-100 text-indigo-700 px-4 py-1.5 rounded-full font-black text-sm">
+            UP TO {maxXpFromRubric} XP FROM SCORES
+          </div>
+          {result.welcomeBoostApplied && (
+            <div className="bg-pink-100 text-pink-700 px-4 py-1.5 rounded-full font-black text-sm flex items-center gap-2">
+              <Gift size={16} />
+              WELCOME BOOST → 250 XP
             </div>
           )}
         </div>
@@ -66,7 +68,7 @@ const ResultView: React.FC<ResultViewProps> = ({ result, onDone }) => {
             {chartData.map(d => (
               <div key={d.subject} className="flex justify-between border-b border-slate-50 py-1">
                 <span className="text-slate-500 font-medium">{d.subject}</span>
-                <span className="font-bold text-slate-800">{d.value}/20</span>
+                <span className="font-bold text-slate-800">{d.value}/20 · {d.value * 5} XP</span>
               </div>
             ))}
           </div>
@@ -76,11 +78,14 @@ const ResultView: React.FC<ResultViewProps> = ({ result, onDone }) => {
         <div className="bg-indigo-600 p-8 rounded-3xl text-white shadow-xl shadow-indigo-100 flex flex-col justify-center items-center text-center space-y-6">
           <p className="text-indigo-100 font-bold uppercase tracking-widest text-sm">TOTAL XP EARNED</p>
           <div className="text-7xl font-black tabular-nums">+{result.totalXp}</div>
+          <p className="text-indigo-200 text-xs font-bold uppercase tracking-wider">Max 500 XP · 100 XP per criterion</p>
           <div className="bg-white/10 backdrop-blur-md p-4 rounded-2xl border border-white/20 w-full">
             <p className="text-sm italic opacity-90">
-              {result.isDuplicate 
-                ? "This looks like a repeat submission! No XP added this time." 
-                : "Great progress! Keep writing to unlock your next reward."}
+              {result.isDuplicate
+                ? "This looks like a repeat submission! No XP added this time."
+                : result.welcomeBoostApplied
+                  ? "Welcome boost applied! Your first composition earned at least 250 XP."
+                  : "Great progress! Keep writing to unlock your next reward."}
             </p>
           </div>
         </div>
@@ -94,7 +99,7 @@ const ResultView: React.FC<ResultViewProps> = ({ result, onDone }) => {
         </div>
       </div>
 
-      <button 
+      <button
         onClick={onDone}
         className="w-full bg-slate-800 hover:bg-slate-900 text-white font-black text-lg py-5 rounded-2xl flex items-center justify-center gap-3 transition-all"
       >

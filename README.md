@@ -36,7 +36,7 @@ Edit `.env.local` and set at minimum:
 | `FIREBASE_PROJECT_ID` | Yes | Firebase project ID |
 | `VITE_DEV_AUTH_BYPASS` | Local dev | Set to `true` to skip Google OAuth locally |
 
-Optional (payments, GitHub, production): see comments in `.env.example` for `STRIPE_*`, `GITHUB_*`, `APP_URL`.
+Optional (payments, production): see comments in `.env.example` for `STRIPE_*`, `APP_URL`.
 
 > **Never commit `.env.local`.** It is listed in `.gitignore`.
 

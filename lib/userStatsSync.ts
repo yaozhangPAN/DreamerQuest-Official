@@ -1,7 +1,7 @@
 import { UserStats, SpellingSession } from '../types';
 
-/** Fields written only by the server (Stripe webhook, GitHub OAuth). */
-const SERVER_OWNED_KEYS = ['isSubscribed', 'githubConnection'] as const;
+/** Fields written only by the server (Stripe webhook). */
+const SERVER_OWNED_KEYS = ['isSubscribed'] as const;
 
 function stripSpellingImages(sessions: SpellingSession[]): SpellingSession[] {
   return sessions.map((session) => ({
@@ -40,7 +40,6 @@ export function mergeUserStatsFromFirestore(
     submissions: (data.submissions as UserStats['submissions']) ?? [],
     activeSpellingSessions,
     isSubscribed: Boolean(data.isSubscribed),
-    githubConnection: data.githubConnection as UserStats['githubConnection'],
   } as UserStats;
 }
 

@@ -15,6 +15,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ items, onBack }) => {
       case 'Composition': return <Send size={20} />;
       case 'Spelling': return <Mic size={20} />;
       case 'Oral': return <PlayCircle size={20} />;
+      case 'Article': return <BookOpen size={20} />;
       default: return <BookOpen size={20} />;
     }
   };
@@ -24,6 +25,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ items, onBack }) => {
       case 'Composition': return 'bg-indigo-100 text-indigo-600';
       case 'Spelling': return 'bg-emerald-100 text-emerald-600';
       case 'Oral': return 'bg-amber-100 text-amber-600';
+      case 'Article': return 'bg-rose-100 text-rose-600';
       default: return 'bg-slate-100 text-slate-600';
     }
   };

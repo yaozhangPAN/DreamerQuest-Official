@@ -1,1 +1,136 @@
 @import "tailwindcss";
+
+/* XP gain pop-out */
+.xp-popup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: radial-gradient(circle at center, rgba(99, 102, 241, 0.18), transparent 55%);
+  animation: xp-overlay-fade 2.2s ease-out forwards;
+}
+
+.xp-popup-card {
+  position: relative;
+  text-align: center;
+  padding: 1.5rem 2.5rem;
+  border-radius: 1.75rem;
+  background: linear-gradient(145deg, #4f46e5 0%, #7c3aed 45%, #db2777 100%);
+  color: white;
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.25),
+    0 25px 60px rgba(79, 70, 229, 0.45);
+  animation: xp-card-pop 2.2s cubic-bezier(0.22, 1.4, 0.36, 1) forwards;
+}
+
+.xp-popup-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  margin-bottom: 0.5rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #fde68a;
+  animation: xp-icon-spin 0.8s ease-out;
+}
+
+.xp-popup-label {
+  font-size: 0.75rem;
+  font-weight: 900;
+  letter-spacing: 0.25em;
+  opacity: 0.9;
+}
+
+.xp-popup-amount {
+  margin-top: 0.25rem;
+  font-size: clamp(3.5rem, 10vw, 5.5rem);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  text-shadow: 0 4px 0 rgba(0, 0, 0, 0.15);
+  background: linear-gradient(180deg, #fff 20%, #fde68a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: xp-amount-glow 1.2s ease-in-out infinite alternate;
+}
+
+.xp-popup-burst {
+  position: absolute;
+  width: 12rem;
+  height: 12rem;
+  border-radius: 9999px;
+  border: 3px solid rgba(253, 230, 138, 0.55);
+  animation: xp-burst 1.4s ease-out forwards;
+}
+
+.xp-popup-burst-delay {
+  animation-delay: 0.18s;
+  width: 16rem;
+  height: 16rem;
+  border-color: rgba(167, 139, 250, 0.4);
+}
+
+.xp-popup-sparkles span {
+  position: absolute;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: #fde68a;
+  box-shadow: 0 0 10px #fbbf24;
+  animation: xp-sparkle 1.6s ease-out forwards;
+}
+
+.xp-popup-sparkles span:nth-child(1) { top: 10%; left: 15%; animation-delay: 0.05s; }
+.xp-popup-sparkles span:nth-child(2) { top: 20%; right: 12%; animation-delay: 0.15s; }
+.xp-popup-sparkles span:nth-child(3) { bottom: 18%; left: 20%; animation-delay: 0.25s; }
+.xp-popup-sparkles span:nth-child(4) { bottom: 12%; right: 18%; animation-delay: 0.35s; }
+.xp-popup-sparkles span:nth-child(5) { top: 45%; left: -0.5rem; animation-delay: 0.2s; }
+
+@keyframes xp-overlay-fade {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes xp-card-pop {
+  0% { transform: scale(0.35) translateY(40px) rotate(-6deg); opacity: 0; }
+  18% { transform: scale(1.12) translateY(0) rotate(1deg); opacity: 1; }
+  30% { transform: scale(0.96) rotate(-1deg); }
+  42% { transform: scale(1.04) rotate(0deg); }
+  70% { transform: scale(1) translateY(0); opacity: 1; }
+  100% { transform: scale(0.9) translateY(-48px); opacity: 0; }
+}
+
+@keyframes xp-icon-spin {
+  0% { transform: scale(0) rotate(-180deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+@keyframes xp-amount-glow {
+  from { filter: drop-shadow(0 0 4px rgba(253, 230, 138, 0.4)); }
+  to { filter: drop-shadow(0 0 16px rgba(253, 230, 138, 0.95)); }
+}
+
+@keyframes xp-burst {
+  0% { transform: scale(0.4); opacity: 0.9; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+@keyframes xp-sparkle {
+  0% { transform: translate(0, 0) scale(0); opacity: 0; }
+  30% { opacity: 1; transform: scale(1.2); }
+  100% { transform: translate(var(--sx, 20px), var(--sy, -40px)) scale(0); opacity: 0; }
+}
+
+.xp-popup-sparkles span:nth-child(1) { --sx: -30px; --sy: -50px; }
+.xp-popup-sparkles span:nth-child(2) { --sx: 40px; --sy: -45px; }
+.xp-popup-sparkles span:nth-child(3) { --sx: -35px; --sy: 30px; }
+.xp-popup-sparkles span:nth-child(4) { --sx: 35px; --sy: 35px; }
+.xp-popup-sparkles span:nth-child(5) { --sx: -50px; --sy: 0; }

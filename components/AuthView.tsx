@@ -6,19 +6,23 @@ import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { logFirestoreError, OperationType } from '../lib/firebaseUtils';
 import { toClientFirestorePayload } from '../lib/userStatsSync';
 import { isDevAuthBypassEnabled } from '../lib/devAuth';
-import { GraduationCap, ArrowRight, Sparkles, User as UserIcon, Building2, BookOpen, Mail } from 'lucide-react';
+import { validateAdminCredentials } from '../lib/adminAuth';
+import { GraduationCap, ArrowRight, Sparkles, User as UserIcon, Building2, BookOpen, Mail, Shield } from 'lucide-react';
 
 interface AuthViewProps {
   onSuccess: (profile?: UserProfile) => void;
+  onAdminLogin: () => void;
   resumeUser?: User | null;
 }
 
-const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
+const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onAdminLogin, resumeUser }) => {
   const isDevBypass = isDevAuthBypassEnabled();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  
-  // States for profile completion
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [adminUsername, setAdminUsername] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+
   const [pendingUser, setPendingUser] = useState<User | null>(null);
   const [showDevProfile, setShowDevProfile] = useState(isDevBypass);
   const [formData, setFormData] = useState({
@@ -39,19 +43,27 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
     }
   }, [resumeUser, isDevBypass]);
 
+  const handleAdminSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!validateAdminCredentials(adminUsername.trim(), adminPassword)) {
+      setError('Invalid admin username or password.');
+      return;
+    }
+    onAdminLogin();
+  };
+
   const handleGoogleLogin = async () => {
     setIsLoading(true);
     setError('');
     try {
       const provider = new GoogleAuthProvider();
       const userCredential = await signInWithPopup(auth, provider);
-      
-      // Check if user exists
+
       const userDocRef = doc(db, 'users', userCredential.user.uid);
       const docSnap = await getDoc(userDocRef);
-      
+
       if (!docSnap.exists()) {
-        // User does not exist, require profile completion
         setPendingUser(userCredential.user);
         setFormData(prev => ({
           ...prev,
@@ -59,7 +71,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
           parentEmail: userCredential.user.email || ''
         }));
       } else {
-        onSuccess(); // Existing user will be loaded in App.tsx
+        onSuccess();
       }
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user') {
@@ -94,10 +106,10 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
     }
 
     if (!pendingUser) return;
-    
+
     try {
       const userDocRef = doc(db, 'users', pendingUser.uid);
-      
+
       const newStats: UserStats = {
         profile: newProfile,
         totalXp: 0,
@@ -110,7 +122,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
         activeSpellingSessions: [],
         isSubscribed: false,
       };
-      
+
       await setDoc(userDocRef, toClientFirestorePayload(newStats), { merge: true })
         .catch(e => logFirestoreError(e, OperationType.WRITE, 'users'));
       onSuccess(newProfile);
@@ -120,8 +132,6 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
       setIsLoading(false);
     }
   };
-
-  const handleDevProfileSubmit = handleProfileSubmit;
 
   return (
     <div className="max-w-md mx-auto py-12 px-4 animate-in fade-in slide-in-from-bottom-8 duration-700">
@@ -147,34 +157,84 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
               <Sparkles size={14} />
               {error}
             </div>
-            {!pendingUser && (
-              <p className="font-normal text-xs mt-1">If you get a network error, please click the "Open in new tab" button at the top right of the preview window to sign in.</p>
-            )}
           </div>
         )}
 
-        {!pendingUser && !showDevProfile ? (
-          <button 
-            onClick={handleGoogleLogin}
-            disabled={isLoading}
-            className="w-full bg-white border-2 border-slate-200 hover:border-indigo-600 hover:bg-slate-50 text-slate-800 py-4 mt-2 rounded-2xl font-black text-lg transition-all flex items-center justify-center gap-3 transform hover:-translate-y-1 active:scale-[0.98]"
-          >
-            {isLoading ? 'CONNECTING...' : 'CONTINUE WITH GOOGLE'}
-            {!isLoading && <ArrowRight size={20} />}
-          </button>
+        {showAdminLogin ? (
+          <form onSubmit={handleAdminSubmit} className="space-y-4 animate-in fade-in duration-300">
+            <div className="text-center mb-2">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-100 text-rose-600">
+                <Shield size={22} />
+              </div>
+              <h3 className="text-xl font-bold text-slate-800">Admin Access</h3>
+              <p className="text-sm text-slate-500">QA testing account only</p>
+            </div>
+            <input
+              type="text"
+              autoComplete="username"
+              placeholder="Admin username"
+              required
+              value={adminUsername}
+              onChange={(e) => setAdminUsername(e.target.value)}
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+            />
+            <input
+              type="password"
+              autoComplete="current-password"
+              placeholder="Admin password"
+              required
+              value={adminPassword}
+              onChange={(e) => setAdminPassword(e.target.value)}
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+            />
+            <button
+              type="submit"
+              className="w-full rounded-2xl bg-rose-600 py-4 text-lg font-black text-white hover:bg-rose-700"
+            >
+              ENTER ADMIN MODE
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowAdminLogin(false);
+                setError('');
+              }}
+              className="w-full py-2 text-sm font-bold text-slate-400 hover:text-slate-600"
+            >
+              Back to normal login
+            </button>
+          </form>
+        ) : !pendingUser && !showDevProfile ? (
+          <div className="space-y-4">
+            <button
+              onClick={handleGoogleLogin}
+              disabled={isLoading}
+              className="w-full bg-white border-2 border-slate-200 hover:border-indigo-600 hover:bg-slate-50 text-slate-800 py-4 mt-2 rounded-2xl font-black text-lg transition-all flex items-center justify-center gap-3 transform hover:-translate-y-1 active:scale-[0.98]"
+            >
+              {isLoading ? 'CONNECTING...' : 'CONTINUE WITH GOOGLE'}
+              {!isLoading && <ArrowRight size={20} />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAdminLogin(true)}
+              className="w-full py-2 text-xs font-bold uppercase tracking-widest text-slate-300 hover:text-rose-500"
+            >
+              Admin
+            </button>
+          </div>
         ) : (
-          <form onSubmit={handleDevProfileSubmit} className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-500">
+          <form onSubmit={handleProfileSubmit} className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-500">
             <div className="text-center mb-6">
               <h3 className="text-xl font-bold text-slate-800">
-                {showDevProfile && !pendingUser ? 'Create Your Dev Profile' : 'Complete Your Profile'}
+                {showDevProfile && !pendingUser ? 'Create New Account' : 'Complete Your Profile'}
               </h3>
               <p className="text-slate-500 text-sm">
                 {showDevProfile && !pendingUser
-                  ? 'Fill in your details to explore the app locally.'
+                  ? 'This creates a fresh account so article quizzes start with a clean attempt history.'
                   : 'Tell us a bit more about yourself to get started.'}
               </p>
             </div>
-            
+
             <div className="space-y-4">
               <div className="relative">
                 <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
@@ -237,12 +297,19 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, resumeUser }) => {
               </div>
             </div>
 
-            <button 
+            <button
               type="submit"
               disabled={isLoading}
               className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 mt-6 rounded-2xl font-black text-lg transition-all flex items-center justify-center gap-3 transform hover:-translate-y-1 active:scale-[0.98] shadow-xl shadow-indigo-100"
             >
               {isLoading ? 'SAVING...' : 'START ADVENTURE'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAdminLogin(true)}
+              className="w-full py-2 text-xs font-bold uppercase tracking-widest text-slate-300 hover:text-rose-500"
+            >
+              Admin
             </button>
           </form>
         )}
