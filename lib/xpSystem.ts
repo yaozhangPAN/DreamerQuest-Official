@@ -8,18 +8,50 @@ export const COMPOSITION_FIRST_SUBMISSION_FLOOR = 250;
 
 /** Article quiz XP */
 export const ARTICLE_READ_XP = 10;
+export const ARTICLE_MCQ_CORRECT_XP = 5;
+export const ARTICLE_OPEN_CORRECT_XP = 15;
+
+/** @deprecated Kept for older UI copy; completion XP is now per-correct-answer. */
 export const ARTICLE_COMPLETE_XP = 25;
-export const ARTICLE_PERFECT_BONUS_XP = 10;
+/** @deprecated Perfect bonus removed — XP scales with correct answers. */
+export const ARTICLE_PERFECT_BONUS_XP = 0;
 
 export function calculateArticleQuizCompletionXp(options: {
-  allCorrect: boolean;
-}): { completeXp: number; perfectBonusXp: number; totalXp: number } {
-  const completeXp = ARTICLE_COMPLETE_XP;
-  const perfectBonusXp = options.allCorrect ? ARTICLE_PERFECT_BONUS_XP : 0;
+  questionResults: Array<{
+    questionId: string;
+    isCorrect: boolean;
+    type?: 'mcq' | 'open';
+  }>;
+}): {
+  completeXp: number;
+  perfectBonusXp: number;
+  mcqXp: number;
+  openXp: number;
+  correctMcqCount: number;
+  correctOpenCount: number;
+  totalXp: number;
+} {
+  let correctMcqCount = 0;
+  let correctOpenCount = 0;
+
+  for (const result of options.questionResults || []) {
+    if (!result.isCorrect) continue;
+    if (result.type === 'open') correctOpenCount += 1;
+    else correctMcqCount += 1;
+  }
+
+  const mcqXp = correctMcqCount * ARTICLE_MCQ_CORRECT_XP;
+  const openXp = correctOpenCount * ARTICLE_OPEN_CORRECT_XP;
+  const completeXp = mcqXp + openXp;
+
   return {
     completeXp,
-    perfectBonusXp,
-    totalXp: completeXp + perfectBonusXp,
+    perfectBonusXp: 0,
+    mcqXp,
+    openXp,
+    correctMcqCount,
+    correctOpenCount,
+    totalXp: completeXp,
   };
 }
 

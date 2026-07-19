@@ -27,10 +27,12 @@ export async function generateArticleMcqs(input: {
   const raw = await api<{
     title: string;
     questions: Array<{
+      type?: 'mcq' | 'open';
       prompt: string;
-      options: string[];
-      correctIndex: number;
+      options?: string[];
+      correctIndex?: number;
       explanation: string;
+      suggestedAnswer?: string;
     }>;
   }>('/api/gemini/generate-article-mcqs', {
     method: 'POST',
@@ -81,6 +83,17 @@ export async function fetchArticleFromUrlApi(url: string): Promise<{
   });
 }
 
+export async function extractArticleFromFileApi(input: {
+  filename: string;
+  mimeType?: string;
+  dataBase64: string;
+}): Promise<{ title: string; article: string }> {
+  return api('/api/article-quizzes/extract-file', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
 export async function createArticleQuiz(input: {
   title: string;
   article: string;
@@ -123,7 +136,15 @@ export async function submitArticleQuiz(
   input: { uid: string; studentName: string; answers: Record<string, string> },
 ): Promise<{
   submission: ArticleQuizSubmission;
-  xpAwarded: { completeXp: number; perfectBonusXp: number; totalXp: number };
+  xpAwarded: {
+    completeXp: number;
+    perfectBonusXp: number;
+    mcqXp: number;
+    openXp: number;
+    correctMcqCount: number;
+    correctOpenCount: number;
+    totalXp: number;
+  };
 }> {
   return api(`/api/article-quizzes/${id}/submit`, {
     method: 'POST',

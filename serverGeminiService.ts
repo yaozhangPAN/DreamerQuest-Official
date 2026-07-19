@@ -923,20 +923,23 @@ export async function generateArticleMcqs(options: {
   title?: string;
   questionCount?: number;
 }): Promise<{ title: string; questions: Array<{
+  type: 'mcq' | 'open';
   prompt: string;
-  options: string[];
-  correctIndex: number;
+  options?: string[];
+  correctIndex?: number;
   explanation: string;
+  suggestedAnswer?: string;
 }> }> {
   return withRetry(async () => {
-    const { article, title, questionCount = 5 } = options;
-    const count = Math.min(12, Math.max(3, questionCount));
+    const { article, title } = options;
+    // Always generate a fixed pool: 5 MCQ + 3 open-ended for admin selection.
+    void options.questionCount;
 
     const response = await ai.models.generateContent({
       model: FLASH_MODEL,
       contents: {
         parts: [{
-          text: `You are creating a reading-comprehension MCQ quiz for students aged 11–16.
+          text: `You are creating a reading-comprehension quiz for students aged 11–16.
 
 Article title (optional): ${title || '(none)'}
 Article:
@@ -944,17 +947,28 @@ Article:
 ${article.slice(0, 12000)}
 """
 
-Create exactly ${count} multiple-choice questions based ONLY on the article.
-Rules:
-- Each question must have exactly 4 options.
-- Exactly one correct answer per question.
+Create EXACTLY 8 questions based ONLY on the article:
+1) Exactly 5 multiple-choice questions (type "mcq")
+2) Exactly 3 open-ended short-answer questions (type "open")
+
+Rules for MCQ (type "mcq"):
+- Exactly 4 options.
+- Exactly one correct answer.
 - Mix difficulty: factual recall, inference, vocabulary-in-context.
-- Keep language clear for secondary students.
-- Explanations should briefly say why the correct option is right.
+- Include correctIndex (0-3) and a short explanation.
+
+Rules for open-ended (type "open"):
+- Ask for a short written answer (1–3 sentences).
+- Provide suggestedAnswer: a clear model answer the examiner can use when marking.
+- Provide explanation: brief marking guidance (what a good answer should include).
+- Do NOT include options or correctIndex for open questions.
+
+Keep language clear for secondary students.
 
 Return JSON with:
 - title: a short quiz title
-- questions: array of { prompt, options (4 strings), correctIndex (0-3), explanation }`,
+- questions: array of 8 items in this order: 5 mcq then 3 open
+  Each item: { type, prompt, options?, correctIndex?, explanation, suggestedAnswer? }`,
         }],
       },
       config: {
@@ -968,12 +982,14 @@ Return JSON with:
               items: {
                 type: Type.OBJECT,
                 properties: {
+                  type: { type: Type.STRING },
                   prompt: { type: Type.STRING },
                   options: { type: Type.ARRAY, items: { type: Type.STRING } },
                   correctIndex: { type: Type.NUMBER },
                   explanation: { type: Type.STRING },
+                  suggestedAnswer: { type: Type.STRING },
                 },
-                required: ['prompt', 'options', 'correctIndex', 'explanation'],
+                required: ['type', 'prompt', 'explanation'],
               },
             },
           },
@@ -982,7 +998,41 @@ Return JSON with:
       },
     });
 
-    return JSON.parse(response.text || '{}');
+    const parsed = JSON.parse(response.text || '{}') as {
+      title?: string;
+      questions?: Array<{
+        type?: string;
+        prompt?: string;
+        options?: string[];
+        correctIndex?: number;
+        explanation?: string;
+        suggestedAnswer?: string;
+      }>;
+    };
+
+    const questions = (parsed.questions || []).map((q) => {
+      const type = q.type === 'open' ? 'open' as const : 'mcq' as const;
+      if (type === 'open') {
+        return {
+          type,
+          prompt: String(q.prompt || ''),
+          explanation: String(q.explanation || ''),
+          suggestedAnswer: String(q.suggestedAnswer || q.explanation || ''),
+        };
+      }
+      return {
+        type,
+        prompt: String(q.prompt || ''),
+        options: Array.isArray(q.options) ? q.options.map(String) : [],
+        correctIndex: typeof q.correctIndex === 'number' ? q.correctIndex : 0,
+        explanation: String(q.explanation || ''),
+      };
+    });
+
+    return {
+      title: parsed.title || title || 'Article Quiz',
+      questions,
+    };
   });
 }
 
@@ -991,11 +1041,14 @@ export async function markArticleQuizAnswers(options: {
   title: string;
   questions: Array<{
     id: string;
+    type?: 'mcq' | 'open';
     prompt: string;
     options: Array<{ id: string; text: string }>;
     correctOptionId: string;
     explanation?: string;
-    studentOptionId: string;
+    suggestedAnswer?: string;
+    studentOptionId?: string;
+    studentAnswerText?: string;
   }>;
 }): Promise<{
   score: number;
@@ -1012,11 +1065,24 @@ export async function markArticleQuizAnswers(options: {
   return withRetry(async () => {
     const { article, title, questions } = options;
     const payload = questions.map((q, i) => {
+      const isOpen = q.type === 'open';
+      if (isOpen) {
+        return {
+          index: i + 1,
+          questionId: q.id,
+          type: 'open',
+          prompt: q.prompt,
+          studentAnswer: (q.studentAnswerText || '').trim() || '(blank)',
+          modelAnswer: q.suggestedAnswer || q.explanation || '',
+          rubricHint: q.explanation || '',
+        };
+      }
       const student = q.options.find((o) => o.id === q.studentOptionId);
       const correct = q.options.find((o) => o.id === q.correctOptionId);
       return {
         index: i + 1,
         questionId: q.id,
+        type: 'mcq',
         prompt: q.prompt,
         options: q.options.map((o) => o.text),
         studentAnswer: student?.text || '(blank)',
@@ -1041,8 +1107,8 @@ Student answers to mark:
 ${JSON.stringify(payload, null, 2)}
 
 For EACH question:
-- Decide if the student's chosen answer is correct (must match the intended correct answer; be fair if wording is equivalent).
-- Provide a clear suggested/model answer (the best option text).
+- If type is "mcq": decide if the student's chosen option is correct (match the intended correct answer; be fair if wording is equivalent). suggestedAnswerText = the correct option text.
+- If type is "open": decide if the student's written answer is substantially correct vs the modelAnswer / rubric (accept equivalent ideas, ignore minor grammar if meaning is clear). suggestedAnswerText = the model answer.
 - Write a short explanation (1–2 sentences) suitable for the student.
 - Also write overallFeedback: encouraging, specific, 2–4 sentences.
 
@@ -1084,7 +1150,6 @@ Return JSON:
     });
 
     const parsed = JSON.parse(response.text || '{}');
-    // Safety: align score with boolean results if present
     if (Array.isArray(parsed.questionResults)) {
       const correctCount = parsed.questionResults.filter((r: { isCorrect?: boolean }) => r.isCorrect).length;
       parsed.score = correctCount;
@@ -1094,6 +1159,63 @@ Return JSON:
       parsed.score = Math.min(parsed.score || 0, questions.length);
     }
     return parsed;
+  });
+}
+
+export async function extractTextFromUploadedFile(options: {
+  filename: string;
+  mimeType?: string;
+  dataBase64: string;
+}): Promise<{ title: string; article: string }> {
+  return withRetry(async () => {
+    const { filename, mimeType, dataBase64 } = options;
+    const lower = filename.toLowerCase();
+    const isPdf = lower.endsWith('.pdf') || mimeType === 'application/pdf';
+
+    if (!isPdf) {
+      throw new Error('Server file extraction is only used for PDF. Use client parsing for txt/doc.');
+    }
+
+    const response = await ai.models.generateContent({
+      model: FLASH_MODEL,
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: dataBase64.replace(/^data:[^;]+;base64,/, ''),
+            },
+          },
+          {
+            text: `Extract the full readable article text from this PDF for a student reading quiz.
+Return JSON: { title: string, article: string }
+- title: document title if clear, otherwise a short inferred title
+- article: plain text of the main article body only (no headers/footers/page numbers). Keep paragraph breaks.`,
+          },
+        ],
+      },
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            article: { type: Type.STRING },
+          },
+          required: ['title', 'article'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}') as { title?: string; article?: string };
+    const article = String(parsed.article || '').trim();
+    if (article.length < 80) {
+      throw new Error('Could not extract enough text from this PDF. Try another file or paste the article.');
+    }
+    return {
+      title: String(parsed.title || filename.replace(/\.pdf$/i, '') || 'Uploaded article'),
+      article: article.slice(0, 20000),
+    };
   });
 }
 

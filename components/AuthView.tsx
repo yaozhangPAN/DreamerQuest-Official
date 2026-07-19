@@ -37,7 +37,8 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onAdminLogin, resumeUser
       setPendingUser(resumeUser);
       setFormData(prev => ({
         ...prev,
-        name: resumeUser.displayName || '',
+        // Do not use Google displayName — parents often sign in; student name must be entered deliberately.
+        name: '',
         parentEmail: resumeUser.email || '',
       }));
     }
@@ -67,11 +68,24 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onAdminLogin, resumeUser
         setPendingUser(userCredential.user);
         setFormData(prev => ({
           ...prev,
-          name: userCredential.user.displayName || '',
+          name: '',
           parentEmail: userCredential.user.email || ''
         }));
       } else {
-        onSuccess();
+        const data = docSnap.data() as Partial<UserStats>;
+        const studentName = data.profile?.name?.trim();
+        if (!studentName) {
+          setPendingUser(userCredential.user);
+          setFormData(prev => ({
+            ...prev,
+            name: '',
+            school: data.profile?.school || '',
+            level: data.profile?.level || prev.level,
+            parentEmail: userCredential.user.email || data.profile?.parentEmail || '',
+          }));
+        } else {
+          onSuccess();
+        }
       }
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user') {
@@ -91,10 +105,24 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onAdminLogin, resumeUser
     setIsLoading(true);
     setError('');
 
-    const googleEmail = pendingUser?.email || formData.parentEmail;
+    const studentName = formData.name.trim();
+    if (!studentName) {
+      setError('Please enter the student\'s real name so we can track progress.');
+      setIsLoading(false);
+      return;
+    }
+
+    const school = formData.school.trim();
+    if (!school) {
+      setError('Please enter the school name.');
+      setIsLoading(false);
+      return;
+    }
+
+    const googleEmail = pendingUser?.email || formData.parentEmail.trim();
     const newProfile: UserProfile = {
-      name: formData.name || 'Hero',
-      school: formData.school || 'My School',
+      name: studentName,
+      school,
       level: formData.level,
       parentEmail: googleEmail,
     };
@@ -109,22 +137,32 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onAdminLogin, resumeUser
 
     try {
       const userDocRef = doc(db, 'users', pendingUser.uid);
+      const existing = await getDoc(userDocRef);
 
-      const newStats: UserStats = {
-        profile: newProfile,
-        totalXp: 0,
-        level: 1,
-        prizesWon: [],
-        submissionHistory: [],
-        submissions: [],
-        lastScore: 0,
-        bonusCharges: 0,
-        activeSpellingSessions: [],
-        isSubscribed: false,
-      };
+      if (existing.exists()) {
+        // Completing a missing student name — keep XP / progress intact.
+        await setDoc(
+          userDocRef,
+          { profile: newProfile },
+          { merge: true },
+        ).catch(e => logFirestoreError(e, OperationType.WRITE, 'users'));
+      } else {
+        const newStats: UserStats = {
+          profile: newProfile,
+          totalXp: 0,
+          level: 1,
+          prizesWon: [],
+          submissionHistory: [],
+          submissions: [],
+          lastScore: 0,
+          bonusCharges: 0,
+          activeSpellingSessions: [],
+          isSubscribed: false,
+        };
 
-      await setDoc(userDocRef, toClientFirestorePayload(newStats), { merge: true })
-        .catch(e => logFirestoreError(e, OperationType.WRITE, 'users'));
+        await setDoc(userDocRef, toClientFirestorePayload(newStats), { merge: true })
+          .catch(e => logFirestoreError(e, OperationType.WRITE, 'users'));
+      }
       onSuccess(newProfile);
     } catch (err: any) {
       setError(err.message || 'Failed to save profile.');
@@ -226,12 +264,12 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onAdminLogin, resumeUser
           <form onSubmit={handleProfileSubmit} className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-500">
             <div className="text-center mb-6">
               <h3 className="text-xl font-bold text-slate-800">
-                {showDevProfile && !pendingUser ? 'Create New Account' : 'Complete Your Profile'}
+                {showDevProfile && !pendingUser ? 'Create New Account' : 'Student Profile'}
               </h3>
               <p className="text-slate-500 text-sm">
                 {showDevProfile && !pendingUser
                   ? 'This creates a fresh account so article quizzes start with a clean attempt history.'
-                  : 'Tell us a bit more about yourself to get started.'}
+                  : 'Enter the student\'s name so teachers can track learning progress.'}
               </p>
             </div>
 
@@ -242,8 +280,10 @@ const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onAdminLogin, resumeUser
                 </div>
                 <input
                   type="text"
-                  placeholder="Your Name (e.g. Alex)"
+                  placeholder="Student name (姓名)"
                   required
+                  minLength={1}
+                  autoComplete="name"
                   value={formData.name}
                   onChange={e => setFormData({ ...formData, name: e.target.value })}
                   className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-800 font-medium placeholder:text-slate-400 transition-all"

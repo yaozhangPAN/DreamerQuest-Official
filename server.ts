@@ -23,6 +23,7 @@ import {
   generateArticleMcqs,
   markArticleQuizAnswers,
   consolidateArticleQuizStats,
+  extractTextFromUploadedFile,
 } from "./serverGeminiService";
 import {
   createGroup,
@@ -471,7 +472,7 @@ async function startServer() {
       if (hideAnswers) {
         const safe = {
           ...quiz,
-          questions: quiz.questions.map(({ correctOptionId, explanation, ...rest }) => rest),
+          questions: quiz.questions.map(({ correctOptionId, explanation, suggestedAnswer, ...rest }) => rest),
         };
         return res.json({ quiz: safe });
       }
@@ -492,6 +493,24 @@ async function startServer() {
     } catch (err: any) {
       console.error("Error fetching article URL:", err);
       res.status(400).json({ error: err.message || "Failed to open article link" });
+    }
+  });
+
+  app.post("/api/article-quizzes/extract-file", async (req, res) => {
+    try {
+      const { filename, mimeType, dataBase64 } = req.body || {};
+      if (!filename || !dataBase64) {
+        return res.status(400).json({ error: "filename and dataBase64 are required" });
+      }
+      const result = await extractTextFromUploadedFile({
+        filename: String(filename),
+        mimeType: mimeType ? String(mimeType) : undefined,
+        dataBase64: String(dataBase64),
+      });
+      res.json(result);
+    } catch (err: any) {
+      console.error("Error extracting uploaded article file:", err);
+      res.status(400).json({ error: err.message || "Failed to extract text from file" });
     }
   });
 
@@ -611,14 +630,21 @@ async function startServer() {
         return res.status(409).json({ error: "This account already completed this quiz. Only one attempt per account." });
       }
 
-      const markPayload = quiz.questions.map((q) => ({
-        id: q.id,
-        prompt: q.prompt,
-        options: q.options,
-        correctOptionId: q.correctOptionId,
-        explanation: q.explanation,
-        studentOptionId: String(answers[q.id] || ''),
-      }));
+      const markPayload = quiz.questions.map((q) => {
+        const isOpen = q.type === 'open';
+        const answer = String(answers[q.id] || '');
+        return {
+          id: q.id,
+          type: isOpen ? 'open' as const : 'mcq' as const,
+          prompt: q.prompt,
+          options: q.options || [],
+          correctOptionId: q.correctOptionId || '',
+          explanation: q.explanation,
+          suggestedAnswer: q.suggestedAnswer,
+          studentOptionId: isOpen ? undefined : answer,
+          studentAnswerText: isOpen ? answer : undefined,
+        };
+      });
 
       const marking = await markArticleQuizAnswers({
         article: quiz.article,
@@ -637,8 +663,16 @@ async function startServer() {
         questionResults: marking.questionResults,
       });
 
-      const allCorrect = submission.score === submission.maxScore && submission.maxScore > 0;
-      const xp = calculateArticleQuizCompletionXp({ allCorrect });
+      const questionTypeById = new Map(
+        quiz.questions.map((q) => [q.id, q.type === 'open' ? 'open' as const : 'mcq' as const]),
+      );
+      const xp = calculateArticleQuizCompletionXp({
+        questionResults: (marking.questionResults || []).map((r: { questionId: string; isCorrect: boolean }) => ({
+          questionId: r.questionId,
+          isCorrect: !!r.isCorrect,
+          type: questionTypeById.get(r.questionId) || 'mcq',
+        })),
+      });
 
       try {
         await refreshClassStats(req.params.id);
@@ -651,6 +685,10 @@ async function startServer() {
         xpAwarded: {
           completeXp: xp.completeXp,
           perfectBonusXp: xp.perfectBonusXp,
+          mcqXp: xp.mcqXp,
+          openXp: xp.openXp,
+          correctMcqCount: xp.correctMcqCount,
+          correctOpenCount: xp.correctOpenCount,
           totalXp: xp.totalXp,
         },
       });

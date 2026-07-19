@@ -127,12 +127,29 @@ export interface ArticleMcqOption {
   text: string;
 }
 
+export type ArticleQuestionType = 'mcq' | 'open';
+
 export interface ArticleMcqQuestion {
   id: string;
+  /** Defaults to 'mcq' for legacy quizzes that omit this field. */
+  type?: ArticleQuestionType;
   prompt: string;
   options: ArticleMcqOption[];
   correctOptionId: string;
   explanation?: string;
+  /** Model / suggested answer for open-ended questions. */
+  suggestedAnswer?: string;
+}
+
+/** Alias used when a quiz may mix MCQ and open-ended items. */
+export type ArticleQuestion = ArticleMcqQuestion;
+
+export function isOpenEndedQuestion(q: ArticleQuestion): boolean {
+  return q.type === 'open';
+}
+
+export function isMcqQuestion(q: ArticleQuestion): boolean {
+  return q.type !== 'open';
 }
 
 /** Class/cohort that shares one join code; students only see that group's quizzes. */
@@ -158,7 +175,7 @@ export interface ArticleQuiz {
   sourceUrl?: string;
   /** Group this quiz belongs to. Students only see quizzes for their joined group. */
   groupId?: string;
-  questions: ArticleMcqQuestion[];
+  questions: ArticleQuestion[];
   published: boolean;
   createdAt: number;
   updatedAt: number;
@@ -169,7 +186,8 @@ export interface ArticleQuizSubmission {
   quizId: string;
   uid: string;
   studentName: string;
-  answers: Record<string, string>; // questionId -> optionId
+  /** questionId -> optionId (MCQ) or free-text answer (open-ended) */
+  answers: Record<string, string>;
   score: number;
   maxScore: number;
   submittedAt: number;

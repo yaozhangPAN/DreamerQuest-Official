@@ -13,7 +13,7 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react';
-import { ArticleQuiz, ArticleQuizGroup, ArticleQuizSubmission } from '../types';
+import { ArticleQuiz, ArticleQuizGroup, ArticleQuizSubmission, isOpenEndedQuestion } from '../types';
 import {
   getArticleQuiz,
   getArticleQuizProgress,
@@ -24,8 +24,8 @@ import {
   submitArticleQuiz,
 } from '../lib/articleQuizApi';
 import {
-  ARTICLE_COMPLETE_XP,
-  ARTICLE_PERFECT_BONUS_XP,
+  ARTICLE_MCQ_CORRECT_XP,
+  ARTICLE_OPEN_CORRECT_XP,
   ARTICLE_READ_XP,
 } from '../lib/xpSystem';
 
@@ -55,6 +55,10 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
     read: 0,
     complete: 0,
     perfect: 0,
+    mcq: 0,
+    open: 0,
+    correctMcqCount: 0,
+    correctOpenCount: 0,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -86,7 +90,15 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
     setResult(null);
     setAnswers({});
     setPhase('list');
-    setSessionXp({ read: 0, complete: 0, perfect: 0 });
+    setSessionXp({
+      read: 0,
+      complete: 0,
+      perfect: 0,
+      mcq: 0,
+      open: 0,
+      correctMcqCount: 0,
+      correctOpenCount: 0,
+    });
     setError('');
     setGroup(null);
     refreshList();
@@ -132,7 +144,15 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
     setError('');
     setResult(null);
     setAnswers({});
-    setSessionXp({ read: 0, complete: 0, perfect: 0 });
+    setSessionXp({
+      read: 0,
+      complete: 0,
+      perfect: 0,
+      mcq: 0,
+      open: 0,
+      correctMcqCount: 0,
+      correctOpenCount: 0,
+    });
     try {
       const start = await startArticleQuizRead(id, uid);
       if (start.alreadyCompleted && start.submission) {
@@ -162,7 +182,11 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
 
   const handleSubmit = async () => {
     if (!activeQuiz) return;
-    const unanswered = activeQuiz.questions.filter((q) => !answers[q.id]);
+    const unanswered = activeQuiz.questions.filter((q) => {
+      const raw = answers[q.id];
+      if (isOpenEndedQuestion(q)) return !String(raw || '').trim();
+      return !raw;
+    });
     if (unanswered.length > 0) {
       setError(`Please answer all questions (${unanswered.length} left).`);
       return;
@@ -181,6 +205,10 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
         ...prev,
         complete: xpAwarded.completeXp,
         perfect: xpAwarded.perfectBonusXp,
+        mcq: xpAwarded.mcqXp,
+        open: xpAwarded.openXp,
+        correctMcqCount: xpAwarded.correctMcqCount,
+        correctOpenCount: xpAwarded.correctOpenCount,
       }));
       if (xpAwarded.totalXp > 0) {
         onXpEarned(xpAwarded.totalXp, 'Article quiz complete');
@@ -197,7 +225,15 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
     setResult(null);
     setAnswers({});
     setPhase('list');
-    setSessionXp({ read: 0, complete: 0, perfect: 0 });
+    setSessionXp({
+      read: 0,
+      complete: 0,
+      perfect: 0,
+      mcq: 0,
+      open: 0,
+      correctMcqCount: 0,
+      correctOpenCount: 0,
+    });
     refreshList();
   };
 
@@ -247,14 +283,14 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
                   Reading +{sessionXp.read}
                 </div>
               )}
-              {sessionXp.complete > 0 && (
+              {sessionXp.mcq > 0 && (
                 <div className="rounded-2xl bg-white px-3 py-2 font-bold text-slate-700">
-                  Completed MCQs +{sessionXp.complete}
+                  MCQ {sessionXp.correctMcqCount}×{ARTICLE_MCQ_CORRECT_XP} +{sessionXp.mcq}
                 </div>
               )}
-              {sessionXp.perfect > 0 && (
-                <div className="rounded-2xl bg-white px-3 py-2 font-bold text-emerald-700">
-                  Perfect bonus +{sessionXp.perfect}
+              {sessionXp.open > 0 && (
+                <div className="rounded-2xl bg-white px-3 py-2 font-bold text-slate-700">
+                  Open {sessionXp.correctOpenCount}×{ARTICLE_OPEN_CORRECT_XP} +{sessionXp.open}
                 </div>
               )}
             </div>
@@ -403,8 +439,8 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
           <p className="text-xs font-black uppercase tracking-widest text-indigo-600">Step 2 of 2 · Answering</p>
           <h2 className="text-3xl font-black text-slate-800">{activeQuiz.title}</h2>
           <p className="text-slate-500">
-            Complete all questions for +{ARTICLE_COMPLETE_XP} XP
-            {` · all correct = +${ARTICLE_PERFECT_BONUS_XP} bonus`}. One attempt per account.
+            Each correct MCQ = +{ARTICLE_MCQ_CORRECT_XP} XP · each correct open-ended = +{ARTICLE_OPEN_CORRECT_XP} XP.
+            One attempt per account.
           </p>
         </div>
 
@@ -415,36 +451,61 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
         )}
 
         <div className="space-y-4">
-          {activeQuiz.questions.map((q, qi) => (
-            <div key={q.id} className="rounded-3xl border border-slate-200 bg-white p-5 space-y-3">
-              <p className="font-black text-slate-800">
-                {qi + 1}. {q.prompt}
-              </p>
-              <div className="space-y-2">
-                {q.options.map((opt) => (
-                  <label
-                    key={opt.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 text-sm transition-all ${
-                      answers[q.id] === opt.id
-                        ? 'border-indigo-500 bg-indigo-50 text-indigo-900'
-                        : 'border-slate-200 hover:border-slate-300'
+          {activeQuiz.questions.map((q, qi) => {
+            const isOpen = isOpenEndedQuestion(q);
+            return (
+              <div key={q.id} className="rounded-3xl border border-slate-200 bg-white p-5 space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-black text-slate-800">
+                    {qi + 1}. {q.prompt}
+                  </p>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                      isOpen ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'
                     }`}
                   >
-                    <input
-                      type="radio"
-                      className="mt-1"
-                      name={q.id}
-                      checked={answers[q.id] === opt.id}
-                      onChange={() =>
-                        setAnswers((prev) => ({ ...prev, [q.id]: opt.id }))
-                      }
-                    />
-                    <span className="font-medium">{opt.text}</span>
-                  </label>
-                ))}
+                    {isOpen ? 'Open-ended' : 'MCQ'}
+                  </span>
+                </div>
+
+                {isOpen ? (
+                  <textarea
+                    value={answers[q.id] || ''}
+                    onChange={(e) =>
+                      setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
+                    }
+                    rows={4}
+                    placeholder="Write your answer here…"
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                ) : (
+                  <div className="space-y-2">
+                    {(q.options || []).map((opt) => (
+                      <label
+                        key={opt.id}
+                        className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 text-sm transition-all ${
+                          answers[q.id] === opt.id
+                            ? 'border-indigo-500 bg-indigo-50 text-indigo-900'
+                            : 'border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          className="mt-1"
+                          name={q.id}
+                          checked={answers[q.id] === opt.id}
+                          onChange={() =>
+                            setAnswers((prev) => ({ ...prev, [q.id]: opt.id }))
+                          }
+                        />
+                        <span className="font-medium">{opt.text}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <button
@@ -495,8 +556,8 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
           </p>
         )}
         <p className="text-slate-500">
-          +{ARTICLE_READ_XP} XP to start reading · +{ARTICLE_COMPLETE_XP} XP to finish MCQs · +
-          {ARTICLE_PERFECT_BONUS_XP} XP if all correct. One attempt per account (switch accounts to try again).
+          +{ARTICLE_READ_XP} XP to start reading · +{ARTICLE_MCQ_CORRECT_XP} XP per correct MCQ · +
+          {ARTICLE_OPEN_CORRECT_XP} XP per correct open-ended. One attempt per account (switch accounts to try again).
         </p>
       </div>
 

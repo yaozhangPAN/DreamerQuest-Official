@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -11,8 +11,9 @@ import {
   Sparkles,
   Eye,
   EyeOff,
+  Upload,
 } from 'lucide-react';
-import { ArticleMcqQuestion, ArticleQuiz, ArticleQuizGroup, ArticleQuizRoster } from '../types';
+import { ArticleMcqQuestion, ArticleQuiz, ArticleQuizGroup, ArticleQuizRoster, isOpenEndedQuestion } from '../types';
 import {
   createArticleGroup,
   createArticleQuiz,
@@ -26,6 +27,7 @@ import {
   refreshArticleQuizStats,
   updateArticleQuiz,
 } from '../lib/articleQuizApi';
+import { extractArticleTextFromFile } from '../lib/extractArticleFromFile';
 
 interface ArticleQuizAdminProps {
   onBack: () => void;
@@ -47,11 +49,13 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
   const [articleUrl, setArticleUrl] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
   const [article, setArticle] = useState('');
-  const [questionCount, setQuestionCount] = useState(5);
-  const [draftQuestions, setDraftQuestions] = useState<ArticleMcqQuestion[]>([]);
+  const [candidateQuestions, setCandidateQuestions] = useState<ArticleMcqQuestion[]>([]);
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [draftGroupId, setDraftGroupId] = useState('');
   const [generating, setGenerating] = useState(false);
   const [fetchingUrl, setFetchingUrl] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Groups
   const [newGroupName, setNewGroupName] = useState('');
@@ -104,6 +108,26 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
     }
   }, [tab, selectedId]);
 
+  const draftQuestions = candidateQuestions.filter((q) => selectedCandidateIds.has(q.id));
+
+  const handleUploadArticleFile = async (file: File | null) => {
+    if (!file) return;
+    setUploadingFile(true);
+    setError('');
+    try {
+      const result = await extractArticleTextFromFile(file);
+      setSourceUrl('');
+      setArticleUrl('');
+      setArticle(result.article);
+      if (!title.trim() && result.title) setTitle(result.title);
+    } catch (e: any) {
+      setError(e.message || 'Failed to read uploaded file');
+    } finally {
+      setUploadingFile(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   const handleSubmitArticleUrl = async () => {
     const url = articleUrl.trim();
     if (!url) {
@@ -117,7 +141,6 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
       setSourceUrl(result.url);
       setArticle(result.article);
       if (!title.trim() && result.title) setTitle(result.title);
-      // Open the original link for admin to review
       window.open(result.url, '_blank', 'noopener,noreferrer');
     } catch (e: any) {
       setError(e.message || 'Failed to open article link');
@@ -128,7 +151,7 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
 
   const handleGenerate = async () => {
     if (!article.trim()) {
-      setError('Submit an article URL first so the page content can be loaded.');
+      setError('Load an article via URL or file upload before generating questions.');
       return;
     }
     setGenerating(true);
@@ -137,13 +160,13 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
       const result = await generateArticleMcqs({
         article,
         title: title || undefined,
-        questionCount,
       });
-      setDraftQuestions(result.questions);
+      setCandidateQuestions(result.questions);
+      setSelectedCandidateIds(new Set(result.questions.map((q) => q.id)));
       if (!title.trim() && result.title) setTitle(result.title);
       setTab('create');
     } catch (e: any) {
-      setError(e.message || 'AI MCQ generation failed');
+      setError(e.message || 'AI question generation failed');
     } finally {
       setGenerating(false);
     }
@@ -151,7 +174,7 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
 
   const handleSaveNew = async (publish: boolean) => {
     if (!article.trim() || draftQuestions.length === 0) {
-      setError('Need a submitted article URL and generated questions before saving.');
+      setError('Need article content and at least one selected question before saving.');
       return;
     }
     if (!draftGroupId) {
@@ -173,7 +196,8 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
       setArticleUrl('');
       setSourceUrl('');
       setArticle('');
-      setDraftQuestions([]);
+      setCandidateQuestions([]);
+      setSelectedCandidateIds(new Set());
       await refresh();
       setSelectedId(quiz.id);
       setTab('edit');
@@ -255,9 +279,12 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
     patch: Partial<ArticleMcqQuestion>,
   ) => {
     if (source === 'draft') {
-      setDraftQuestions((prev) =>
-        prev.map((q, i) => (i === qIndex ? { ...q, ...patch } : q)),
-      );
+      setCandidateQuestions((prev) => {
+        const selectedList = prev.filter((q) => selectedCandidateIds.has(q.id));
+        const target = selectedList[qIndex];
+        if (!target) return prev;
+        return prev.map((q) => (q.id === target.id ? { ...q, ...patch } : q));
+      });
       return;
     }
     if (!selected) return;
@@ -275,9 +302,18 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
   ) => {
     const list = source === 'draft' ? draftQuestions : selected?.questions || [];
     const q = list[qIndex];
-    if (!q) return;
+    if (!q || isOpenEndedQuestion(q)) return;
     const options = q.options.map((o, i) => (i === oIndex ? { ...o, text } : o));
     updateQuestion(source, qIndex, { options });
+  };
+
+  const toggleCandidate = (id: string) => {
+    setSelectedCandidateIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const renderQuestionEditor = (
@@ -285,61 +321,86 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
     source: 'draft' | 'selected',
   ) => (
     <div className="space-y-4">
-      {questions.map((q, qi) => (
-        <div key={q.id} className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-          <div className="flex items-start justify-between gap-3">
-            <label className="flex-1 space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                Question {qi + 1}
-              </span>
-              <textarea
-                value={q.prompt}
-                onChange={(e) => updateQuestion(source, qi, { prompt: e.target.value })}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-800"
-                rows={2}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => {
-                if (source === 'draft') {
-                  setDraftQuestions((prev) => prev.filter((_, i) => i !== qi));
-                } else if (selected) {
-                  patchSelected({
-                    questions: selected.questions.filter((_, i) => i !== qi),
-                  });
-                }
-              }}
-              className="rounded-xl p-2 text-rose-500 hover:bg-rose-50"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
-          <div className="space-y-2">
-            {q.options.map((opt, oi) => (
-              <div key={opt.id} className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  name={`correct-${source}-${q.id}`}
-                  checked={q.correctOptionId === opt.id}
-                  onChange={() => updateQuestion(source, qi, { correctOptionId: opt.id })}
+      {questions.map((q, qi) => {
+        const isOpen = isOpenEndedQuestion(q);
+        return (
+          <div key={q.id} className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <label className="flex-1 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Question {qi + 1} · {isOpen ? 'Open-ended' : 'MCQ'}
+                </span>
+                <textarea
+                  value={q.prompt}
+                  onChange={(e) => updateQuestion(source, qi, { prompt: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-800"
+                  rows={2}
                 />
-                <input
-                  value={opt.text}
-                  onChange={(e) => updateOptionText(source, qi, oi, e.target.value)}
-                  className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  if (source === 'draft') {
+                    setCandidateQuestions((prev) => prev.filter((item) => item.id !== q.id));
+                    setSelectedCandidateIds((prev) => {
+                      const next = new Set(prev);
+                      next.delete(q.id);
+                      return next;
+                    });
+                  } else if (selected) {
+                    patchSelected({
+                      questions: selected.questions.filter((_, i) => i !== qi),
+                    });
+                  }
+                }}
+                className="rounded-xl p-2 text-rose-500 hover:bg-rose-50"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+
+            {isOpen ? (
+              <label className="block space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Model / suggested answer
+                </span>
+                <textarea
+                  value={q.suggestedAnswer || ''}
+                  onChange={(e) => updateQuestion(source, qi, { suggestedAnswer: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                  rows={3}
+                  placeholder="Expected answer for AI marking"
                 />
+              </label>
+            ) : (
+              <div className="space-y-2">
+                {(q.options || []).map((opt, oi) => (
+                  <div key={opt.id} className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name={`correct-${source}-${q.id}`}
+                      checked={q.correctOptionId === opt.id}
+                      onChange={() => updateQuestion(source, qi, { correctOptionId: opt.id })}
+                    />
+                    <input
+                      value={opt.text}
+                      onChange={(e) => updateOptionText(source, qi, oi, e.target.value)}
+                      className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+
+            <input
+              value={q.explanation || ''}
+              onChange={(e) => updateQuestion(source, qi, { explanation: e.target.value })}
+              placeholder={isOpen ? 'Marking guidance (optional)' : 'Explanation (optional)'}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
+            />
           </div>
-          <input
-            value={q.explanation || ''}
-            onChange={(e) => updateQuestion(source, qi, { explanation: e.target.value })}
-            placeholder="Explanation (optional)"
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
-          />
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 
@@ -364,7 +425,7 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
             </button>
           )}
           <div className="rounded-full bg-rose-100 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-rose-600">
-            Admin · Article MCQ
+            Admin · Article Quiz
           </div>
         </div>
       </div>
@@ -372,14 +433,14 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
       <div className="space-y-2">
         <h2 className="text-3xl font-black text-slate-800">Article Quizzes</h2>
         <p className="text-slate-500">
-          Submit an article URL, open the link, let AI create MCQs, edit questions, and track submissions.
+          Load an article (URL or PDF/DOC/TXT), let AI propose 5 MCQs + 3 open-ended questions, select which to keep, then publish.
         </p>
       </div>
 
       <div className="flex gap-2 rounded-2xl bg-slate-100 p-1">
         {(
           [
-            ['create', 'URL + AI', Link2],
+            ['create', 'Create + AI', Link2],
             ['edit', 'Edit Qns', Pencil],
             ['roster', 'Submissions', Users],
             ['groups', 'Groups', Users],
@@ -442,6 +503,35 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
               </div>
             </label>
 
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wider text-slate-400">
+                    Or upload PDF / DOC / TXT
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    TXT and Word are parsed locally; PDF is extracted with AI.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={uploadingFile}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {uploadingFile ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                  Upload file
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.doc,.docx,.txt,application/pdf,text/plain,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  className="hidden"
+                  onChange={(e) => handleUploadArticleFile(e.target.files?.[0] || null)}
+                />
+              </div>
+            </div>
+
             {sourceUrl && (
               <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm">
                 <CheckCircle2 size={16} className="text-emerald-600" />
@@ -456,6 +546,16 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
                 </a>
                 <span className="text-xs text-emerald-700/70">
                   {article.length.toLocaleString()} chars extracted for AI
+                </span>
+              </div>
+            )}
+
+            {!sourceUrl && article && (
+              <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm">
+                <CheckCircle2 size={16} className="text-emerald-600" />
+                <span className="font-bold text-emerald-800">File / text loaded</span>
+                <span className="text-xs text-emerald-700/70">
+                  {article.length.toLocaleString()} chars ready for AI
                 </span>
               </div>
             )}
@@ -487,17 +587,6 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
                   ))}
                 </select>
               </label>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-500">
-                Q count
-                <input
-                  type="number"
-                  min={3}
-                  max={12}
-                  value={questionCount}
-                  onChange={(e) => setQuestionCount(Number(e.target.value) || 5)}
-                  className="w-16 rounded-lg border border-slate-200 px-2 py-1"
-                />
-              </label>
               <button
                 type="button"
                 disabled={generating || !article}
@@ -505,7 +594,7 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
                 className="ml-auto inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-black text-white hover:bg-indigo-700 disabled:opacity-60"
               >
                 {generating ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                AI Jobs · Create MCQs
+                AI · 5 MCQ + 3 Open
               </button>
             </div>
             {groups.length === 0 && (
@@ -515,28 +604,106 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
             )}
           </div>
 
-          {draftQuestions.length > 0 && (
+          {candidateQuestions.length > 0 && (
             <div className="space-y-4">
-              <h3 className="text-lg font-black text-slate-800">Generated questions (editable)</h3>
-              {renderQuestionEditor(draftQuestions, 'draft')}
-              <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleSaveNew(false)}
-                  disabled={loading}
-                  className="flex-1 rounded-2xl border-2 border-slate-200 py-4 font-black text-slate-600 hover:bg-slate-50"
-                >
-                  Save Draft
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSaveNew(true)}
-                  disabled={loading}
-                  className="flex-1 rounded-2xl bg-emerald-600 py-4 font-black text-white hover:bg-emerald-700"
-                >
-                  Save & Publish
-                </button>
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-black text-slate-800">Select questions to include</h3>
+                  <p className="text-sm text-slate-500">
+                    AI proposed {candidateQuestions.length} questions · {draftQuestions.length} selected
+                    ({draftQuestions.filter((q) => !isOpenEndedQuestion(q)).length} MCQ ·{' '}
+                    {draftQuestions.filter((q) => isOpenEndedQuestion(q)).length} open)
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCandidateIds(new Set(candidateQuestions.map((q) => q.id)))}
+                    className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-50"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCandidateIds(new Set())}
+                    className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-50"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
+
+              <div className="space-y-3">
+                {candidateQuestions.map((q, qi) => {
+                  const checked = selectedCandidateIds.has(q.id);
+                  const isOpen = isOpenEndedQuestion(q);
+                  return (
+                    <label
+                      key={q.id}
+                      className={`flex cursor-pointer gap-3 rounded-2xl border p-4 transition-all ${
+                        checked ? 'border-indigo-400 bg-indigo-50/40' : 'border-slate-200 bg-white opacity-70'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={checked}
+                        onChange={() => toggleCandidate(q.id)}
+                      />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                            #{qi + 1}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                              isOpen ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'
+                            }`}
+                          >
+                            {isOpen ? 'Open-ended' : 'MCQ'}
+                          </span>
+                        </div>
+                        <p className="text-sm font-bold text-slate-800">{q.prompt}</p>
+                        {!isOpen && (
+                          <p className="text-xs text-slate-500 line-clamp-2">
+                            {(q.options || []).map((o) => o.text).join(' · ')}
+                          </p>
+                        )}
+                        {isOpen && q.suggestedAnswer && (
+                          <p className="text-xs text-slate-500 line-clamp-2">
+                            Model: {q.suggestedAnswer}
+                          </p>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+
+              {draftQuestions.length > 0 && (
+                <>
+                  <h3 className="text-lg font-black text-slate-800">Edit selected questions</h3>
+                  {renderQuestionEditor(draftQuestions, 'draft')}
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleSaveNew(false)}
+                      disabled={loading}
+                      className="flex-1 rounded-2xl border-2 border-slate-200 py-4 font-black text-slate-600 hover:bg-slate-50"
+                    >
+                      Save Draft
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSaveNew(true)}
+                      disabled={loading}
+                      className="flex-1 rounded-2xl bg-emerald-600 py-4 font-black text-white hover:bg-emerald-700"
+                    >
+                      Save & Publish
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

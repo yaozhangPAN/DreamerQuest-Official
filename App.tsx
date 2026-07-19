@@ -192,9 +192,16 @@ const App: React.FC = () => {
         getDoc(doc(db, 'users', userUid))
           .then(snap => {
             if (snap.exists()) {
-              setUserStats(mergeUserStatsFromFirestore(snap.data(), defaultStats));
-              setView(AppView.DASHBOARD);
-              setNeedsProfileCompletion(false);
+              const merged = mergeUserStatsFromFirestore(snap.data(), defaultStats);
+              setUserStats(merged);
+              const studentName = merged.profile?.name?.trim();
+              if (!studentName) {
+                setNeedsProfileCompletion(true);
+                setView(AppView.SIGNUP);
+              } else {
+                setNeedsProfileCompletion(false);
+                setView(AppView.DASHBOARD);
+              }
             } else {
               setNeedsProfileCompletion(true);
               setView(AppView.SIGNUP);
@@ -594,8 +601,12 @@ const App: React.FC = () => {
             setAdminSession(false);
             setIsDataLoaded(true);
           } else if (profile) {
-            setUserStats({ ...defaultStats, profile });
+            setUserStats((prev) => ({
+              ...prev,
+              profile,
+            }));
             setNeedsProfileCompletion(false);
+            setIsDataLoaded(true);
           }
           setView(AppView.DASHBOARD);
         }}
