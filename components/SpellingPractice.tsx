@@ -11,7 +11,14 @@ import {
 import { SpellingSession, Session } from '../types';
 
 interface SpellingPracticeProps {
-  onXpEarned: (count: number) => void;
+  onXpEarned: (
+    count: number,
+    detail?: {
+      correctWords: string[];
+      incorrectWords: Array<{ original: string; student: string }>;
+      feedback: string;
+    },
+  ) => void;
   onDone: () => void;
   activeSession: SpellingSession | null;
   onSaveSession: (session: SpellingSession | null) => void;
@@ -370,7 +377,11 @@ const SpellingPractice: React.FC<SpellingPracticeProps> = ({ onXpEarned, onDone,
         currentWords
       );
       setResult(evalResult);
-      onXpEarned(evalResult.correctWords.length);
+      onXpEarned(evalResult.correctWords.length, {
+        correctWords: evalResult.correctWords,
+        incorrectWords: evalResult.incorrectWords,
+        feedback: evalResult.feedback,
+      });
       
       const isLastSession = sessionData.currentSessionIndex >= sessionData.sessions.length - 1;
 

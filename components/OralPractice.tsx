@@ -68,7 +68,16 @@ function initAudio() {
 
 interface OralPracticeProps {
   onDone: () => void;
-  onXpEarned: (marks: number) => void;
+  onXpEarned: (
+    marks: number,
+    detail?:
+      | { kind: 'oral_exam'; evaluation: import('../types').OralEvaluation }
+      | {
+          kind: 'oral_guided';
+          summary: import('../types').OralPracticeSummary;
+          questions?: string[];
+        },
+  ) => void;
   practiceId?: number;
   youtubeUrl?: string;
 }
@@ -680,7 +689,11 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
       });
       setPracticeSummary(result);
       const passedCount = Object.values(attemptCounts).length;
-      onXpEarned(Math.max(15, passedCount * 10));
+      onXpEarned(Math.max(15, passedCount * 10), {
+        kind: 'oral_guided',
+        summary: result,
+        questions: examinerQuestions,
+      });
       setPhase('PRACTICE_RESULT');
     } catch (error) {
       alert('生成总结失败，请重试。');
@@ -777,7 +790,10 @@ const OralPractice: React.FC<OralPracticeProps> = ({ onDone, onXpEarned, practic
         readingTextOrigin: content.readingText
       });
       setEvaluation(result);
-      onXpEarned(typeof result.totalMarks === 'number' ? result.totalMarks : 0);
+      onXpEarned(typeof result.totalMarks === 'number' ? result.totalMarks : 0, {
+        kind: 'oral_exam',
+        evaluation: result,
+      });
       setPhase('RESULT');
     } catch (error) {
       alert("Evaluation failed. Please try again.");

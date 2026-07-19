@@ -254,13 +254,19 @@ const App: React.FC = () => {
     return code;
   };
 
-  const recordSubmission = (name: string, type: HistoryItem['type'], xp: number) => {
+  const recordSubmission = (
+    name: string,
+    type: HistoryItem['type'],
+    xp: number,
+    extras?: Partial<Pick<HistoryItem, 'quizId' | 'score' | 'maxScore' | 'detail'>>,
+  ) => {
     const newItem: HistoryItem = {
       id: Math.random().toString(36).substr(2, 9),
       name,
       type,
       completedAt: Date.now(),
-      xpEarned: xp
+      xpEarned: xp,
+      ...extras,
     };
     setUserStats(prev => ({
       ...prev,
@@ -268,7 +274,14 @@ const App: React.FC = () => {
     }));
   };
 
-  const handleSpellingXp = (correctCount: number) => {
+  const handleSpellingXp = (
+    correctCount: number,
+    detail?: {
+      correctWords: string[];
+      incorrectWords: Array<{ original: string; student: string }>;
+      feedback: string;
+    },
+  ) => {
     const xpToAdd = calculateSpellingXp(correctCount);
     setUserStats(prev => {
       const newTotalXp = prev.totalXp + xpToAdd;
@@ -280,7 +293,17 @@ const App: React.FC = () => {
     });
 
     if (currentActiveSpellingSession) {
-      recordSubmission(currentActiveSpellingSession.name, 'Spelling', xpToAdd);
+      recordSubmission(currentActiveSpellingSession.name, 'Spelling', xpToAdd, {
+        score: correctCount,
+        detail: detail
+          ? {
+              kind: 'spelling',
+              correctWords: detail.correctWords,
+              incorrectWords: detail.incorrectWords,
+              feedback: detail.feedback,
+            }
+          : undefined,
+      });
     }
     showXpGain(xpToAdd);
   };
@@ -313,7 +336,16 @@ const App: React.FC = () => {
     });
   };
 
-  const handleOralXp = (marks: number) => {
+  const handleOralXp = (
+    marks: number,
+    detail?:
+      | { kind: 'oral_exam'; evaluation: import('./types').OralEvaluation }
+      | {
+          kind: 'oral_guided';
+          summary: import('./types').OralPracticeSummary;
+          questions?: string[];
+        },
+  ) => {
     const xpToAdd = calculateOralXp(marks);
     setUserStats(prev => {
       const newTotalXp = prev.totalXp + xpToAdd;
@@ -324,7 +356,27 @@ const App: React.FC = () => {
       };
     });
 
-    recordSubmission(`Oral Practice #${selectedOralId}`, 'Oral', xpToAdd);
+    const historyDetail =
+      detail?.kind === 'oral_exam'
+        ? {
+            kind: 'oral_exam' as const,
+            evaluation: detail.evaluation,
+            practiceId: selectedOralId,
+          }
+        : detail?.kind === 'oral_guided'
+          ? {
+              kind: 'oral_guided' as const,
+              summary: detail.summary,
+              practiceId: selectedOralId,
+              questions: detail.questions,
+            }
+          : undefined;
+
+    recordSubmission(`Oral Practice #${selectedOralId}`, 'Oral', xpToAdd, {
+      score: marks,
+      maxScore: detail?.kind === 'oral_exam' ? detail.evaluation.maxMarks || 40 : undefined,
+      detail: historyDetail,
+    });
     showXpGain(xpToAdd);
   };
 
@@ -366,8 +418,11 @@ const App: React.FC = () => {
   const applyXpWithHistory = (
     xpToAdd: number,
     history: { name: string; type: HistoryItem['type'] },
-    extras?: Partial<UserStats>,
+    extras?: Partial<UserStats> & {
+      historyExtras?: Partial<Pick<HistoryItem, 'quizId' | 'score' | 'maxScore' | 'detail'>>;
+    },
   ) => {
+    const { historyExtras, ...userExtras } = extras || {};
     setUserStats(prev => {
       const newTotalXp = prev.totalXp + xpToAdd;
       const oldLevel = prev.level;
@@ -382,10 +437,11 @@ const App: React.FC = () => {
         type: history.type,
         completedAt: Date.now(),
         xpEarned: xpToAdd,
+        ...historyExtras,
       };
       return {
         ...prev,
-        ...extras,
+        ...userExtras,
         totalXp: newTotalXp,
         level: newLevel,
         prizesWon: newPrizes,
@@ -398,19 +454,51 @@ const App: React.FC = () => {
   const handleAdminInstantComplete = (payload: AdminInstantPayload) => {
     if (payload.type === 'Spelling') {
       const xp = calculateSpellingXp(payload.correctWords);
-      applyXpWithHistory(xp, {
-        name: `Admin Spelling (${payload.correctWords} correct)`,
-        type: 'Spelling',
-      });
+      applyXpWithHistory(
+        xp,
+        {
+          name: `Admin Spelling (${payload.correctWords} correct)`,
+          type: 'Spelling',
+        },
+        {
+          historyExtras: {
+            score: payload.correctWords,
+            detail: {
+              kind: 'spelling',
+              correctWords: [],
+              incorrectWords: [],
+              feedback: `Admin instant complete — ${payload.correctWords} words marked correct for QA testing.`,
+            },
+          },
+        },
+      );
       return;
     }
 
     if (payload.type === 'Oral') {
       const xp = calculateOralXp(payload.marks);
-      applyXpWithHistory(xp, {
-        name: `Admin Oral (${payload.marks} marks)`,
-        type: 'Oral',
-      });
+      applyXpWithHistory(
+        xp,
+        {
+          name: `Admin Oral (${payload.marks} marks)`,
+          type: 'Oral',
+        },
+        {
+          historyExtras: {
+            score: payload.marks,
+            maxScore: 40,
+            detail: {
+              kind: 'oral_exam',
+              evaluation: {
+                categories: [],
+                feedback: 'Admin instant complete — simulated oral result for QA testing.',
+                totalMarks: payload.marks,
+                maxMarks: 40,
+              },
+            },
+          },
+        },
+      );
       return;
     }
 
@@ -445,6 +533,17 @@ const App: React.FC = () => {
         type: 'Composition',
         completedAt: Date.now(),
         xpEarned: xp,
+        score: payload.scores.idea + payload.scores.structure + payload.scores.content + payload.scores.language + payload.scores.voice,
+        maxScore: 100,
+        detail: {
+          kind: 'composition',
+          scores: payload.scores,
+          feedback:
+            'Admin instant complete — simulated composition evaluation for QA testing.',
+          topic: 'Admin Composition Test',
+          welcomeBoostApplied,
+          isDuplicate: false,
+        },
       };
       return {
         ...prev,
@@ -514,6 +613,21 @@ const App: React.FC = () => {
           type: 'Composition',
           completedAt: Date.now(),
           xpEarned: finalXp,
+          score:
+            evaluation.scores.idea +
+            evaluation.scores.structure +
+            evaluation.scores.content +
+            evaluation.scores.language +
+            evaluation.scores.voice,
+          maxScore: 100,
+          detail: {
+            kind: 'composition',
+            scores: evaluation.scores,
+            feedback: evaluation.feedback,
+            topic: currentTopic || undefined,
+            welcomeBoostApplied,
+            isDuplicate,
+          },
         };
 
         setLastEvaluation({

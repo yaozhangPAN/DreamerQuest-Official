@@ -43,7 +43,36 @@ export interface HistoryItem {
   quizId?: string;
   score?: number;
   maxScore?: number;
+  /** Snapshot of evaluation details for review (Composition / Spelling / Oral). */
+  detail?: HistoryDetail;
 }
+
+export type HistoryDetail =
+  | {
+      kind: 'composition';
+      scores: RubricScore;
+      feedback: string;
+      topic?: string;
+      welcomeBoostApplied?: boolean;
+      isDuplicate?: boolean;
+    }
+  | {
+      kind: 'spelling';
+      correctWords: string[];
+      incorrectWords: Array<{ original: string; student: string }>;
+      feedback: string;
+    }
+  | {
+      kind: 'oral_exam';
+      evaluation: OralEvaluation;
+      practiceId?: number;
+    }
+  | {
+      kind: 'oral_guided';
+      summary: OralPracticeSummary;
+      practiceId?: number;
+      questions?: string[];
+    };
 
 export interface UserProfile {
   name: string;
