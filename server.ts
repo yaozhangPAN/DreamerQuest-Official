@@ -36,6 +36,7 @@ import {
   getQuiz,
   getRoster,
   getSubmissionForUser,
+  initArticleQuizStore,
   leaveGroup,
   listAdminNotifications,
   listApprovedMembers,
@@ -45,6 +46,7 @@ import {
   listQuizzes,
   listSubmissionsForQuiz,
   markAdminNotificationsRead,
+  migrateLocalArticleQuizDataIfNeeded,
   rejectGroupMembership,
   requestJoinGroupByCode,
   saveQuizClassStats,
@@ -90,8 +92,11 @@ if (!admin.apps.length) {
 }
 const authAdmin = admin.auth();
 const dbAdmin = getFirestore(undefined, firebaseConfig.firestoreDatabaseId);
+initArticleQuizStore(dbAdmin);
 
 async function startServer() {
+  await migrateLocalArticleQuizDataIfNeeded();
+
   const app = express();
   // Cloud Run / most hosts inject PORT; fall back for local prod runs.
   const PORT = Number(process.env.PORT) || 8080;
@@ -371,23 +376,23 @@ async function startServer() {
       // Student list: filter by joined group (via uid or explicit groupId).
       if (publishedOnly && (uid || groupIdParam)) {
         let groupId: string | null = groupIdParam || null;
-        let pendingGroup = null as ReturnType<typeof getPendingGroupForUser>;
+        let pendingGroup = null as Awaited<ReturnType<typeof getPendingGroupForUser>>;
         if (uid && !groupIdParam) {
-          groupId = getGroupForUser(uid)?.id ?? null;
-          pendingGroup = getPendingGroupForUser(uid);
+          groupId = (await getGroupForUser(uid))?.id ?? null;
+          pendingGroup = await getPendingGroupForUser(uid);
         }
         if (!groupId) {
           return res.json({ quizzes: [], group: null, pendingGroup });
         }
-        const group = listGroups().find((g) => g.id === groupId) || null;
+        const group = (await listGroups()).find((g) => g.id === groupId) || null;
         return res.json({
-          quizzes: listQuizzes(true, { groupId }),
+          quizzes: await listQuizzes(true, { groupId }),
           group,
           pendingGroup: null,
         });
       }
 
-      res.json({ quizzes: listQuizzes(publishedOnly) });
+      res.json({ quizzes: await listQuizzes(publishedOnly) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to list quizzes" });
     }
@@ -395,7 +400,7 @@ async function startServer() {
 
   app.get("/api/article-groups", async (_req, res) => {
     try {
-      res.json({ groups: listGroups() });
+      res.json({ groups: await listGroups() });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to list groups" });
     }
@@ -407,7 +412,7 @@ async function startServer() {
       if (!name || typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ error: "name is required" });
       }
-      const group = createGroup(
+      const group = await createGroup(
         String(name),
         typeof code === "string" && code.trim() ? String(code) : undefined,
       );
@@ -419,7 +424,7 @@ async function startServer() {
 
   app.delete("/api/article-groups/:id", async (req, res) => {
     try {
-      const ok = deleteGroup(req.params.id);
+      const ok = await deleteGroup(req.params.id);
       if (!ok) return res.status(404).json({ error: "Group not found" });
       res.json({ ok: true });
     } catch (err: any) {
@@ -430,8 +435,8 @@ async function startServer() {
   app.get("/api/article-groups/membership/:uid", async (req, res) => {
     try {
       const uid = String(req.params.uid);
-      const group = getGroupForUser(uid);
-      const pendingGroup = getPendingGroupForUser(uid);
+      const group = await getGroupForUser(uid);
+      const pendingGroup = await getPendingGroupForUser(uid);
       res.json({ group, pendingGroup });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to load membership" });
@@ -447,7 +452,7 @@ async function startServer() {
       if (!code || typeof code !== "string") {
         return res.status(400).json({ error: "code is required" });
       }
-      const result = requestJoinGroupByCode(
+      const result = await requestJoinGroupByCode(
         String(uid),
         String(code),
         typeof studentName === "string" ? studentName : undefined,
@@ -465,7 +470,7 @@ async function startServer() {
 
   app.get("/api/article-groups/pending", async (_req, res) => {
     try {
-      res.json({ pending: listPendingMemberships() });
+      res.json({ pending: await listPendingMemberships() });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to list pending joins" });
     }
@@ -477,7 +482,7 @@ async function startServer() {
       if (!uid || typeof uid !== "string") {
         return res.status(400).json({ error: "uid is required" });
       }
-      const group = approveGroupMembership(String(uid));
+      const group = await approveGroupMembership(String(uid));
       res.json({ group, status: "approved" });
     } catch (err: any) {
       res.status(400).json({ error: err.message || "Failed to approve join" });
@@ -490,7 +495,7 @@ async function startServer() {
       if (!uid || typeof uid !== "string") {
         return res.status(400).json({ error: "uid is required" });
       }
-      const ok = rejectGroupMembership(String(uid));
+      const ok = await rejectGroupMembership(String(uid));
       if (!ok) return res.status(404).json({ error: "No pending join request found" });
       res.json({ ok: true });
     } catch (err: any) {
@@ -500,7 +505,7 @@ async function startServer() {
 
   app.get("/api/admin/notifications", async (_req, res) => {
     try {
-      const notifications = listAdminNotifications();
+      const notifications = await listAdminNotifications();
       res.json({
         notifications,
         unreadCount: notifications.filter((n) => !n.read).length,
@@ -513,7 +518,7 @@ async function startServer() {
   app.post("/api/admin/notifications/read", async (req, res) => {
     try {
       const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : undefined;
-      const marked = markAdminNotificationsRead(ids);
+      const marked = await markAdminNotificationsRead(ids);
       res.json({ marked });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to mark notifications read" });
@@ -526,7 +531,7 @@ async function startServer() {
       if (!uid || typeof uid !== "string") {
         return res.status(400).json({ error: "uid is required" });
       }
-      leaveGroup(String(uid));
+      await leaveGroup(String(uid));
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to leave group" });
@@ -535,7 +540,7 @@ async function startServer() {
 
   app.get("/api/article-quizzes/progress/:uid", async (req, res) => {
     try {
-      const completedQuizIds = listCompletedQuizIdsForUser(String(req.params.uid));
+      const completedQuizIds = await listCompletedQuizIdsForUser(String(req.params.uid));
       res.json({ completedQuizIds });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to load progress" });
@@ -546,9 +551,9 @@ async function startServer() {
     try {
       const uid = typeof req.query.uid === "string" ? req.query.uid : "";
       if (!uid) return res.status(400).json({ error: "uid is required" });
-      const quiz = getQuiz(req.params.id);
+      const quiz = await getQuiz(req.params.id);
       if (!quiz) return res.status(404).json({ error: "Quiz not found" });
-      const submission = getSubmissionForUser(req.params.id, uid);
+      const submission = await getSubmissionForUser(req.params.id, uid);
       if (!submission) {
         return res.status(404).json({ error: "No submission found for this quiz" });
       }
@@ -574,12 +579,12 @@ async function startServer() {
 
   app.get("/api/article-quizzes/:id", async (req, res) => {
     try {
-      const quiz = getQuiz(req.params.id);
+      const quiz = await getQuiz(req.params.id);
       if (!quiz) return res.status(404).json({ error: "Quiz not found" });
       const hideAnswers = req.query.student === "1" || req.query.student === "true";
       const uid = typeof req.query.uid === "string" ? req.query.uid : "";
       if (hideAnswers && uid) {
-        const group = getGroupForUser(uid);
+        const group = await getGroupForUser(uid);
         if (!quiz.groupId || !group || group.id !== quiz.groupId) {
           return res.status(403).json({ error: "Join this quiz's group to access it" });
         }
@@ -645,7 +650,7 @@ async function startServer() {
         createdAt: now,
         updatedAt: now,
       };
-      upsertQuiz(quiz);
+      await upsertQuiz(quiz);
       res.json({ quiz });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to create quiz" });
@@ -655,9 +660,9 @@ async function startServer() {
   app.put("/api/article-quizzes/:id", async (req, res) => {
     try {
       const { title, article, questions, published, sourceUrl, groupId } = req.body;
-      const existing = getQuiz(req.params.id);
+      const existing = await getQuiz(req.params.id);
       if (!existing) return res.status(404).json({ error: "Quiz not found" });
-      const updated = updateQuizQuestions(
+      const updated = await updateQuizQuestions(
         req.params.id,
         Array.isArray(questions) ? questions : existing.questions,
         {
@@ -686,7 +691,7 @@ async function startServer() {
 
   app.delete("/api/article-quizzes/:id", async (req, res) => {
     try {
-      const ok = deleteQuiz(req.params.id);
+      const ok = await deleteQuiz(req.params.id);
       if (!ok) return res.status(404).json({ error: "Quiz not found" });
       res.json({ ok: true });
     } catch (err: any) {
@@ -699,14 +704,14 @@ async function startServer() {
       const { uid } = req.body;
       if (!uid) return res.status(400).json({ error: "uid is required" });
 
-      const quiz = getQuiz(req.params.id);
+      const quiz = await getQuiz(req.params.id);
       if (!quiz) return res.status(404).json({ error: "Quiz not found" });
-      const membershipGroup = getGroupForUser(String(uid));
+      const membershipGroup = await getGroupForUser(String(uid));
       if (!quiz.groupId || !membershipGroup || membershipGroup.id !== quiz.groupId) {
         return res.status(403).json({ error: "Join this quiz's group to access it" });
       }
 
-      const existing = getSubmissionForUser(req.params.id, String(uid));
+      const existing = await getSubmissionForUser(req.params.id, String(uid));
       if (existing) {
         return res.json({
           alreadyCompleted: true,
@@ -715,7 +720,7 @@ async function startServer() {
         });
       }
 
-      const result = startArticleQuizRead(req.params.id, String(uid));
+      const result = await startArticleQuizRead(req.params.id, String(uid));
       res.json({
         alreadyCompleted: false,
         alreadyRead: result.alreadyRead,
@@ -732,16 +737,16 @@ async function startServer() {
       if (!uid || !studentName || !answers) {
         return res.status(400).json({ error: "uid, studentName, and answers are required" });
       }
-      const quiz = getQuiz(req.params.id);
+      const quiz = await getQuiz(req.params.id);
       if (!quiz) return res.status(404).json({ error: "Quiz not found" });
       if (!quiz.published) return res.status(400).json({ error: "Quiz is not published" });
 
-      const membershipGroup = getGroupForUser(String(uid));
+      const membershipGroup = await getGroupForUser(String(uid));
       if (!quiz.groupId || !membershipGroup || membershipGroup.id !== quiz.groupId) {
         return res.status(403).json({ error: "Join this quiz's group to access it" });
       }
 
-      if (getSubmissionForUser(req.params.id, String(uid))) {
+      if (await getSubmissionForUser(req.params.id, String(uid))) {
         return res.status(409).json({ error: "This account already completed this quiz. Only one attempt per account." });
       }
 
@@ -767,7 +772,7 @@ async function startServer() {
         questions: markPayload,
       });
 
-      const submission = submitQuizAnswers({
+      const submission = await submitQuizAnswers({
         quizId: req.params.id,
         uid: String(uid),
         studentName: String(studentName),
@@ -816,7 +821,7 @@ async function startServer() {
   async function loadRosterStudents(quiz: ArticleQuiz): Promise<Array<{ uid: string; studentName: string }>> {
     // Prefer group members when the quiz is assigned to a group.
     if (quiz.groupId) {
-      const members = listApprovedMembers(quiz.groupId);
+      const members = await listApprovedMembers(quiz.groupId);
       const nameByUid = new Map<string, string>();
       try {
         const snap = await dbAdmin.collection("users").get();
@@ -845,12 +850,12 @@ async function startServer() {
   }
 
   async function refreshClassStats(quizId: string): Promise<ArticleQuizClassStats> {
-    const quiz = getQuiz(quizId);
+    const quiz = await getQuiz(quizId);
     if (!quiz) throw new Error("Quiz not found");
 
     const students = await loadRosterStudents(quiz);
-    const roster = getRoster(quizId, students);
-    const submissions = listSubmissionsForQuiz(quizId);
+    const roster = await getRoster(quizId, students);
+    const submissions = await listSubmissionsForQuiz(quizId);
     const scores = submissions.map((s) => s.score);
     const maxScore =
       submissions[0]?.maxScore ||
@@ -904,7 +909,7 @@ async function startServer() {
       recommendations: ai.recommendations || [],
       updatedAt: Date.now(),
     };
-    return saveQuizClassStats(stats);
+    return await saveQuizClassStats(stats);
   }
 
   app.post("/api/article-quizzes/:id/refresh-stats", async (req, res) => {
@@ -918,11 +923,11 @@ async function startServer() {
 
   app.get("/api/article-quizzes/:id/roster", async (req, res) => {
     try {
-      const quiz = getQuiz(req.params.id);
+      const quiz = await getQuiz(req.params.id);
       if (!quiz) return res.status(404).json({ error: "Quiz not found" });
 
       const students = await loadRosterStudents(quiz);
-      res.json({ roster: getRoster(req.params.id, students) });
+      res.json({ roster: await getRoster(req.params.id, students) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to load roster" });
     }

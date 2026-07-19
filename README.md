@@ -125,5 +125,5 @@ After the first deploy, set `APP_URL` to the service URL shown by Cloud Run (`ht
 ### Notes
 
 - Do **not** set `VITE_DEV_AUTH_BYPASS` in Cloud Run.
-- Article quiz data is stored under `/app/data` inside the container (**ephemeral** — wiped on new revisions / scale-to-zero). Fine for a trial; migrate to Firestore later for real classes.
+- Article quiz data (groups, quizzes, submissions) is stored in **Firestore** and survives Cloud Run deploys.
 - Prefer Secret Manager for `GEMINI_API_KEY` in production instead of plain env vars once you harden the setup.
