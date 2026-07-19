@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import {
+  AdminNotification,
   ArticleMcqQuestion,
   ArticleQuiz,
   ArticleQuizClassStats,
@@ -19,6 +20,7 @@ const STATS_FILE = path.join(DATA_DIR, 'article-quiz-stats.json');
 const READS_FILE = path.join(DATA_DIR, 'article-quiz-reads.json');
 const GROUPS_FILE = path.join(DATA_DIR, 'article-quiz-groups.json');
 const MEMBERSHIPS_FILE = path.join(DATA_DIR, 'article-quiz-memberships.json');
+const NOTIFS_FILE = path.join(DATA_DIR, 'admin-notifications.json');
 
 type ArticleReadRecord = {
   id: string; // quizId_uid
@@ -35,7 +37,20 @@ type Store = {
   reads: ArticleReadRecord[];
   groups: ArticleQuizGroup[];
   memberships: ArticleQuizGroupMembership[];
+  notifications: AdminNotification[];
 };
+
+function normalizeMembership(raw: ArticleQuizGroupMembership): ArticleQuizGroupMembership {
+  return {
+    ...raw,
+    status: raw.status === 'pending' ? 'pending' : 'approved',
+    requestedAt: raw.requestedAt || raw.joinedAt,
+  };
+}
+
+function isApproved(m: ArticleQuizGroupMembership): boolean {
+  return m.status !== 'pending';
+}
 
 function ensureStore(): Store {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
@@ -54,10 +69,14 @@ function ensureStore(): Store {
   const groups: ArticleQuizGroup[] = existsSync(GROUPS_FILE)
     ? JSON.parse(readFileSync(GROUPS_FILE, 'utf-8'))
     : [];
-  const memberships: ArticleQuizGroupMembership[] = existsSync(MEMBERSHIPS_FILE)
+  const membershipsRaw: ArticleQuizGroupMembership[] = existsSync(MEMBERSHIPS_FILE)
     ? JSON.parse(readFileSync(MEMBERSHIPS_FILE, 'utf-8'))
     : [];
-  return { quizzes, submissions, classStats, reads, groups, memberships };
+  const memberships = membershipsRaw.map(normalizeMembership);
+  const notifications: AdminNotification[] = existsSync(NOTIFS_FILE)
+    ? JSON.parse(readFileSync(NOTIFS_FILE, 'utf-8'))
+    : [];
+  return { quizzes, submissions, classStats, reads, groups, memberships, notifications };
 }
 
 function saveQuizzes(quizzes: ArticleQuiz[]) {
@@ -88,6 +107,32 @@ function saveGroups(groups: ArticleQuizGroup[]) {
 function saveMemberships(memberships: ArticleQuizGroupMembership[]) {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   writeFileSync(MEMBERSHIPS_FILE, JSON.stringify(memberships, null, 2));
+}
+
+function saveNotifications(notifications: AdminNotification[]) {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(NOTIFS_FILE, JSON.stringify(notifications, null, 2));
+}
+
+function pushJoinNotification(input: {
+  groupId: string;
+  groupName: string;
+  uid: string;
+  studentName: string;
+}) {
+  const store = ensureStore();
+  const notification: AdminNotification = {
+    id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    type: 'group_join_request',
+    groupId: input.groupId,
+    groupName: input.groupName,
+    uid: input.uid,
+    studentName: input.studentName || 'Student',
+    createdAt: Date.now(),
+    read: false,
+  };
+  store.notifications.unshift(notification);
+  saveNotifications(store.notifications.slice(0, 200));
 }
 
 function normalizeGroupCode(code: string): string {
@@ -156,25 +201,144 @@ export function deleteGroup(id: string): boolean {
 }
 
 export function getMembershipForUser(uid: string): ArticleQuizGroupMembership | null {
-  return ensureStore().memberships.find((m) => m.uid === uid) || null;
+  const raw = ensureStore().memberships.find((m) => m.uid === uid);
+  return raw ? normalizeMembership(raw) : null;
 }
 
+/** Approved group only — students cannot access quizzes while pending. */
 export function getGroupForUser(uid: string): ArticleQuizGroup | null {
   const membership = getMembershipForUser(uid);
-  if (!membership) return null;
+  if (!membership || !isApproved(membership)) return null;
   return getGroup(membership.groupId) || null;
 }
 
-/** Join (or switch to) a group by code. One active group per account. */
-export function joinGroupByCode(uid: string, code: string): ArticleQuizGroup {
+export function getPendingGroupForUser(uid: string): ArticleQuizGroup | null {
+  const membership = getMembershipForUser(uid);
+  if (!membership || membership.status !== 'pending') return null;
+  return getGroup(membership.groupId) || null;
+}
+
+/**
+ * Request to join a group by code. Creates a pending membership until admin approves.
+ * One membership record per account.
+ */
+export function requestJoinGroupByCode(
+  uid: string,
+  code: string,
+  studentName?: string,
+): { group: ArticleQuizGroup; status: 'pending' | 'approved'; alreadyMember: boolean } {
   const group = getGroupByCode(code);
   if (!group) throw new Error('Invalid group code');
 
   const store = ensureStore();
+  const existing = store.memberships.find((m) => m.uid === uid);
+  const name = (studentName || existing?.studentName || '').trim() || 'Student';
+
+  if (existing && existing.groupId === group.id) {
+    const normalized = normalizeMembership(existing);
+    if (isApproved(normalized)) {
+      return { group, status: 'approved', alreadyMember: true };
+    }
+    return { group, status: 'pending', alreadyMember: false };
+  }
+
   const without = store.memberships.filter((m) => m.uid !== uid);
-  without.push({ uid, groupId: group.id, joinedAt: Date.now() });
+  const now = Date.now();
+  without.push({
+    uid,
+    groupId: group.id,
+    joinedAt: now,
+    status: 'pending',
+    studentName: name,
+    requestedAt: now,
+  });
   saveMemberships(without);
+  pushJoinNotification({
+    groupId: group.id,
+    groupName: group.name,
+    uid,
+    studentName: name,
+  });
+  return { group, status: 'pending', alreadyMember: false };
+}
+
+/** @deprecated Use requestJoinGroupByCode — kept for older callers. */
+export function joinGroupByCode(uid: string, code: string): ArticleQuizGroup {
+  const result = requestJoinGroupByCode(uid, code);
+  return result.group;
+}
+
+export function approveGroupMembership(uid: string): ArticleQuizGroup {
+  const store = ensureStore();
+  const idx = store.memberships.findIndex((m) => m.uid === uid);
+  if (idx < 0) throw new Error('No join request found for this student');
+  const membership = normalizeMembership(store.memberships[idx]);
+  if (membership.status !== 'pending') {
+    const group = getGroup(membership.groupId);
+    if (!group) throw new Error('Group not found');
+    return group;
+  }
+  const group = getGroup(membership.groupId);
+  if (!group) throw new Error('Group not found');
+  store.memberships[idx] = {
+    ...membership,
+    status: 'approved',
+    joinedAt: Date.now(),
+    reviewedAt: Date.now(),
+  };
+  saveMemberships(store.memberships);
   return group;
+}
+
+export function rejectGroupMembership(uid: string): boolean {
+  const store = ensureStore();
+  const membership = store.memberships.find((m) => m.uid === uid);
+  if (!membership || normalizeMembership(membership).status !== 'pending') {
+    return false;
+  }
+  saveMemberships(store.memberships.filter((m) => m.uid !== uid));
+  return true;
+}
+
+export function listPendingMemberships(groupId?: string): Array<
+  ArticleQuizGroupMembership & { groupName: string; groupCode: string }
+> {
+  const store = ensureStore();
+  return store.memberships
+    .map(normalizeMembership)
+    .filter((m) => m.status === 'pending' && (!groupId || m.groupId === groupId))
+    .map((m) => {
+      const group = store.groups.find((g) => g.id === m.groupId);
+      return {
+        ...m,
+        groupName: group?.name || 'Unknown group',
+        groupCode: group?.code || '',
+      };
+    })
+    .sort((a, b) => (b.requestedAt || b.joinedAt) - (a.requestedAt || a.joinedAt));
+}
+
+export function listApprovedMembers(groupId: string): ArticleQuizGroupMembership[] {
+  return ensureStore()
+    .memberships.map(normalizeMembership)
+    .filter((m) => m.groupId === groupId && isApproved(m));
+}
+
+export function listAdminNotifications(): AdminNotification[] {
+  return [...ensureStore().notifications].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function markAdminNotificationsRead(ids?: string[]): number {
+  const store = ensureStore();
+  let count = 0;
+  const next = store.notifications.map((n) => {
+    if (n.read) return n;
+    if (ids && ids.length > 0 && !ids.includes(n.id)) return n;
+    count += 1;
+    return { ...n, read: true };
+  });
+  saveNotifications(next);
+  return count;
 }
 
 export function leaveGroup(uid: string): boolean {
@@ -340,6 +504,49 @@ export function saveQuizClassStats(stats: ArticleQuizClassStats): ArticleQuizCla
 
 export function getQuizClassStats(quizId: string): ArticleQuizClassStats | null {
   return ensureStore().classStats[quizId] || null;
+}
+
+/** Deterministic per-question accuracy + most common wrong answer from submissions. */
+export function computeQuestionAccuracyFromSubmissions(
+  quiz: ArticleQuiz,
+  submissions: ArticleQuizSubmission[],
+): ArticleQuizClassStats['questionAccuracy'] {
+  return quiz.questions.map((q) => {
+    const results = submissions.flatMap((s) =>
+      (s.questionResults || []).filter((r) => r.questionId === q.id),
+    );
+    const answered = results.length;
+    const correct = results.filter((r) => r.isCorrect).length;
+    const wrongTexts = results
+      .filter((r) => !r.isCorrect)
+      .map((r) => String(r.studentAnswerText || '').trim())
+      .filter(Boolean);
+
+    const counts = new Map<string, { display: string; count: number }>();
+    for (const text of wrongTexts) {
+      const key = text.toLowerCase();
+      const prev = counts.get(key);
+      if (prev) prev.count += 1;
+      else counts.set(key, { display: text, count: 1 });
+    }
+
+    let commonWrongAnswer: string | undefined;
+    let commonWrongCount = 0;
+    for (const { display, count } of counts.values()) {
+      if (count > commonWrongCount) {
+        commonWrongCount = count;
+        commonWrongAnswer = display;
+      }
+    }
+
+    return {
+      questionId: q.id,
+      prompt: q.prompt,
+      correctRate: answered ? Math.round((correct / answered) * 100) : 0,
+      commonWrongAnswer,
+      commonWrongCount: commonWrongCount > 0 ? commonWrongCount : undefined,
+    };
+  });
 }
 
 export function getRoster(

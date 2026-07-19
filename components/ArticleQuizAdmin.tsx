@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { ArticleMcqQuestion, ArticleQuiz, ArticleQuizGroup, ArticleQuizRoster, isOpenEndedQuestion } from '../types';
 import {
+  approveGroupJoin,
   createArticleGroup,
   createArticleQuiz,
   deleteArticleGroup,
@@ -22,9 +23,13 @@ import {
   fetchArticleFromUrlApi,
   generateArticleMcqs,
   getArticleQuizRoster,
+  listAdminNotifications,
   listArticleGroups,
   listArticleQuizzes,
+  listPendingGroupJoins,
+  markAdminNotificationsRead,
   refreshArticleQuizStats,
+  rejectGroupJoin,
   updateArticleQuiz,
 } from '../lib/articleQuizApi';
 import { extractArticleTextFromFile } from '../lib/extractArticleFromFile';
@@ -52,6 +57,8 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
   const [candidateQuestions, setCandidateQuestions] = useState<ArticleMcqQuestion[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [draftGroupId, setDraftGroupId] = useState('');
+  const [mcqCount, setMcqCount] = useState(5);
+  const [openCount, setOpenCount] = useState(3);
   const [generating, setGenerating] = useState(false);
   const [fetchingUrl, setFetchingUrl] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
@@ -60,6 +67,18 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
   // Groups
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupCode, setNewGroupCode] = useState('');
+  const [pendingJoins, setPendingJoins] = useState<
+    Array<{
+      uid: string;
+      groupId: string;
+      studentName?: string;
+      requestedAt?: number;
+      joinedAt: number;
+      groupName: string;
+      groupCode: string;
+    }>
+  >([]);
+  const [unreadNotifs, setUnreadNotifs] = useState(0);
 
   // Roster
   const [roster, setRoster] = useState<ArticleQuizRoster | null>(null);
@@ -79,12 +98,16 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
     setLoading(true);
     setError('');
     try {
-      const [listed, groupList] = await Promise.all([
+      const [listed, groupList, pending, notifs] = await Promise.all([
         listArticleQuizzes(false),
         listArticleGroups(),
+        listPendingGroupJoins().catch(() => []),
+        listAdminNotifications().catch(() => ({ notifications: [], unreadCount: 0 })),
       ]);
       setQuizzes(listed.quizzes);
       setGroups(groupList);
+      setPendingJoins(pending);
+      setUnreadNotifs(notifs.unreadCount);
       if (!draftGroupId && groupList[0]) setDraftGroupId(groupList[0].id);
       if (selectedId && !listed.quizzes.find((q) => q.id === selectedId)) {
         setSelectedId(listed.quizzes[0]?.id || null);
@@ -149,6 +172,13 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
     }
   };
 
+  useEffect(() => {
+    if (tab === 'groups') {
+      markAdminNotificationsRead().catch(() => undefined);
+      setUnreadNotifs(0);
+    }
+  }, [tab]);
+
   const handleGenerate = async () => {
     if (!article.trim()) {
       setError('Load an article via URL or file upload before generating questions.');
@@ -160,6 +190,8 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
       const result = await generateArticleMcqs({
         article,
         title: title || undefined,
+        mcqCount,
+        openCount,
       });
       setCandidateQuestions(result.questions);
       setSelectedCandidateIds(new Set(result.questions.map((q) => q.id)));
@@ -169,6 +201,32 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
       setError(e.message || 'AI question generation failed');
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleApproveJoin = async (studentUid: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      await approveGroupJoin(studentUid);
+      await refresh();
+    } catch (e: any) {
+      setError(e.message || 'Failed to approve join');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRejectJoin = async (studentUid: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      await rejectGroupJoin(studentUid);
+      await refresh();
+    } catch (e: any) {
+      setError(e.message || 'Failed to reject join');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -433,7 +491,8 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
       <div className="space-y-2">
         <h2 className="text-3xl font-black text-slate-800">Article Quizzes</h2>
         <p className="text-slate-500">
-          Load an article (URL or PDF/DOC/TXT), let AI propose 5 MCQs + 3 open-ended questions, select which to keep, then publish.
+          Load an article (URL or PDF/DOC/TXT), choose how many MCQ and open questions to generate,
+          select which to keep, then publish.
         </p>
       </div>
 
@@ -450,11 +509,16 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
             key={id}
             type="button"
             onClick={() => setTab(id)}
-            className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-black transition-all ${
+            className={`relative flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-black transition-all ${
               tab === id ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'
             }`}
           >
             <Icon size={14} /> {label}
+            {id === 'groups' && (pendingJoins.length > 0 || unreadNotifs > 0) && (
+              <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-black text-white">
+                {pendingJoins.length || unreadNotifs}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -571,7 +635,29 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
               </details>
             )}
 
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="flex flex-col gap-1 text-xs font-black uppercase tracking-wider text-slate-400">
+                MCQ count
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={mcqCount}
+                  onChange={(e) => setMcqCount(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+                  className="w-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-800"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-black uppercase tracking-wider text-slate-400">
+                Open-ended
+                <input
+                  type="number"
+                  min={0}
+                  max={8}
+                  value={openCount}
+                  onChange={(e) => setOpenCount(Math.max(0, Math.min(8, Number(e.target.value) || 0)))}
+                  className="w-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-800"
+                />
+              </label>
               <label className="flex items-center gap-2 text-sm font-bold text-slate-500">
                 Group
                 <select
@@ -594,7 +680,7 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
                 className="ml-auto inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-black text-white hover:bg-indigo-700 disabled:opacity-60"
               >
                 {generating ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                AI · 5 MCQ + 3 Open
+                AI · {mcqCount} MCQ + {openCount} Open
               </button>
             </div>
             {groups.length === 0 && (
@@ -924,20 +1010,32 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
               </div>
 
               {roster.classStats.questionAccuracy.length > 0 && (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <p className="text-xs font-black uppercase tracking-wider text-slate-400">
-                    Per-question accuracy
+                    Per-question accuracy &amp; group common wrong answers
                   </p>
                   {roster.classStats.questionAccuracy.map((qa) => (
-                    <div key={qa.questionId} className="rounded-2xl bg-white px-4 py-3 text-sm">
+                    <div key={qa.questionId} className="rounded-2xl bg-white px-4 py-3 text-sm space-y-2">
                       <div className="flex justify-between gap-3">
                         <p className="font-bold text-slate-700 line-clamp-2">{qa.prompt}</p>
                         <span className="shrink-0 font-black text-indigo-600">{qa.correctRate}%</span>
                       </div>
-                      {qa.commonWrongAnswer && (
-                        <p className="mt-1 text-xs text-slate-400">
-                          Common wrong answer: {qa.commonWrongAnswer}
-                        </p>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-indigo-500"
+                          style={{ width: `${Math.max(0, Math.min(100, qa.correctRate))}%` }}
+                        />
+                      </div>
+                      {qa.commonWrongAnswer ? (
+                        <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-amber-600">
+                            Group common wrong answer
+                            {qa.commonWrongCount ? ` · ${qa.commonWrongCount} student(s)` : ''}
+                          </p>
+                          <p className="mt-0.5 font-bold text-amber-900">{qa.commonWrongAnswer}</p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400">No common wrong answer yet.</p>
                       )}
                     </div>
                   ))}
@@ -1005,11 +1103,63 @@ const ArticleQuizAdmin: React.FC<ArticleQuizAdminProps> = ({ onBack, onOpenStude
 
       {tab === 'groups' && (
         <div className="space-y-5">
+          {pendingJoins.length > 0 && (
+            <div className="rounded-3xl border border-amber-200 bg-amber-50 p-6 space-y-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-widest text-amber-600">
+                  Notifications · Join requests
+                </p>
+                <h3 className="text-lg font-black text-slate-800">
+                  Pending approval ({pendingJoins.length})
+                </h3>
+                <p className="text-sm text-slate-500">
+                  Students who entered a group code need your approval before they can see quizzes.
+                </p>
+              </div>
+              <div className="space-y-3">
+                {pendingJoins.map((p) => (
+                  <div
+                    key={`${p.uid}_${p.groupId}`}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-4 py-3"
+                  >
+                    <div>
+                      <p className="font-black text-slate-800">{p.studentName || p.uid}</p>
+                      <p className="text-xs font-bold text-slate-400">
+                        Wants to join {p.groupName} ({p.groupCode})
+                        {p.requestedAt
+                          ? ` · ${new Date(p.requestedAt).toLocaleString()}`
+                          : ''}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() => handleApproveJoin(p.uid)}
+                        className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() => handleRejectJoin(p.uid)}
+                        className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="rounded-3xl border border-slate-200 bg-white p-6 space-y-4">
             <h3 className="text-lg font-black text-slate-800">Create group</h3>
             <p className="text-sm text-slate-500">
-              Each group gets one join code. Share the code with students — they only see quizzes
-              assigned to that group.
+              Each group gets one join code. Students request to join with the code; you approve them
+              in the list above. They only see quizzes assigned to that group after approval.
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <input

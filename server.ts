@@ -26,19 +26,27 @@ import {
   extractTextFromUploadedFile,
 } from "./serverGeminiService";
 import {
+  approveGroupMembership,
+  computeQuestionAccuracyFromSubmissions,
   createGroup,
   deleteGroup,
   deleteQuiz,
   getGroupForUser,
+  getPendingGroupForUser,
   getQuiz,
   getRoster,
   getSubmissionForUser,
-  joinGroupByCode,
   leaveGroup,
+  listAdminNotifications,
+  listApprovedMembers,
   listCompletedQuizIdsForUser,
   listGroups,
+  listPendingMemberships,
   listQuizzes,
   listSubmissionsForQuiz,
+  markAdminNotificationsRead,
+  rejectGroupMembership,
+  requestJoinGroupByCode,
   saveQuizClassStats,
   startArticleQuizRead,
   submitQuizAnswers,
@@ -336,11 +344,17 @@ async function startServer() {
 
   app.post("/api/gemini/generate-article-mcqs", async (req, res) => {
     try {
-      const { article, title, questionCount } = req.body;
+      const { article, title, questionCount, mcqCount, openCount } = req.body;
       if (!article || typeof article !== "string" || !article.trim()) {
         return res.status(400).json({ error: "article is required" });
       }
-      const result = await generateArticleMcqs({ article, title, questionCount });
+      const result = await generateArticleMcqs({
+        article,
+        title,
+        questionCount,
+        mcqCount: typeof mcqCount === "number" ? mcqCount : undefined,
+        openCount: typeof openCount === "number" ? openCount : undefined,
+      });
       res.json(result);
     } catch (err: any) {
       console.error("Error in generate-article-mcqs endpoint:", err);
@@ -357,16 +371,19 @@ async function startServer() {
       // Student list: filter by joined group (via uid or explicit groupId).
       if (publishedOnly && (uid || groupIdParam)) {
         let groupId: string | null = groupIdParam || null;
+        let pendingGroup = null as ReturnType<typeof getPendingGroupForUser>;
         if (uid && !groupIdParam) {
           groupId = getGroupForUser(uid)?.id ?? null;
+          pendingGroup = getPendingGroupForUser(uid);
         }
         if (!groupId) {
-          return res.json({ quizzes: [], group: null });
+          return res.json({ quizzes: [], group: null, pendingGroup });
         }
         const group = listGroups().find((g) => g.id === groupId) || null;
         return res.json({
           quizzes: listQuizzes(true, { groupId }),
           group,
+          pendingGroup: null,
         });
       }
 
@@ -412,8 +429,10 @@ async function startServer() {
 
   app.get("/api/article-groups/membership/:uid", async (req, res) => {
     try {
-      const group = getGroupForUser(String(req.params.uid));
-      res.json({ group });
+      const uid = String(req.params.uid);
+      const group = getGroupForUser(uid);
+      const pendingGroup = getPendingGroupForUser(uid);
+      res.json({ group, pendingGroup });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to load membership" });
     }
@@ -421,17 +440,83 @@ async function startServer() {
 
   app.post("/api/article-groups/join", async (req, res) => {
     try {
-      const { uid, code } = req.body || {};
+      const { uid, code, studentName } = req.body || {};
       if (!uid || typeof uid !== "string") {
         return res.status(400).json({ error: "uid is required" });
       }
       if (!code || typeof code !== "string") {
         return res.status(400).json({ error: "code is required" });
       }
-      const group = joinGroupByCode(String(uid), String(code));
-      res.json({ group });
+      const result = requestJoinGroupByCode(
+        String(uid),
+        String(code),
+        typeof studentName === "string" ? studentName : undefined,
+      );
+      res.json({
+        group: result.group,
+        status: result.status,
+        alreadyMember: result.alreadyMember,
+        pending: result.status === "pending",
+      });
     } catch (err: any) {
       res.status(400).json({ error: err.message || "Failed to join group" });
+    }
+  });
+
+  app.get("/api/article-groups/pending", async (_req, res) => {
+    try {
+      res.json({ pending: listPendingMemberships() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to list pending joins" });
+    }
+  });
+
+  app.post("/api/article-groups/approve", async (req, res) => {
+    try {
+      const { uid } = req.body || {};
+      if (!uid || typeof uid !== "string") {
+        return res.status(400).json({ error: "uid is required" });
+      }
+      const group = approveGroupMembership(String(uid));
+      res.json({ group, status: "approved" });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || "Failed to approve join" });
+    }
+  });
+
+  app.post("/api/article-groups/reject", async (req, res) => {
+    try {
+      const { uid } = req.body || {};
+      if (!uid || typeof uid !== "string") {
+        return res.status(400).json({ error: "uid is required" });
+      }
+      const ok = rejectGroupMembership(String(uid));
+      if (!ok) return res.status(404).json({ error: "No pending join request found" });
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || "Failed to reject join" });
+    }
+  });
+
+  app.get("/api/admin/notifications", async (_req, res) => {
+    try {
+      const notifications = listAdminNotifications();
+      res.json({
+        notifications,
+        unreadCount: notifications.filter((n) => !n.read).length,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to load notifications" });
+    }
+  });
+
+  app.post("/api/admin/notifications/read", async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : undefined;
+      const marked = markAdminNotificationsRead(ids);
+      res.json({ marked });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to mark notifications read" });
     }
   });
 
@@ -454,6 +539,36 @@ async function startServer() {
       res.json({ completedQuizIds });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to load progress" });
+    }
+  });
+
+  app.get("/api/article-quizzes/:id/my-submission", async (req, res) => {
+    try {
+      const uid = typeof req.query.uid === "string" ? req.query.uid : "";
+      if (!uid) return res.status(400).json({ error: "uid is required" });
+      const quiz = getQuiz(req.params.id);
+      if (!quiz) return res.status(404).json({ error: "Quiz not found" });
+      const submission = getSubmissionForUser(req.params.id, uid);
+      if (!submission) {
+        return res.status(404).json({ error: "No submission found for this quiz" });
+      }
+      res.json({
+        quiz: {
+          id: quiz.id,
+          title: quiz.title,
+          article: quiz.article,
+          sourceUrl: quiz.sourceUrl,
+          questions: quiz.questions.map((q) => ({
+            id: q.id,
+            type: q.type || "mcq",
+            prompt: q.prompt,
+            options: q.options,
+          })),
+        },
+        submission,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to load submission review" });
     }
   });
 
@@ -698,28 +813,54 @@ async function startServer() {
     }
   });
 
-  async function refreshClassStats(quizId: string): Promise<ArticleQuizClassStats> {
-    const quiz = getQuiz(quizId);
-    if (!quiz) throw new Error("Quiz not found");
+  async function loadRosterStudents(quiz: ArticleQuiz): Promise<Array<{ uid: string; studentName: string }>> {
+    // Prefer group members when the quiz is assigned to a group.
+    if (quiz.groupId) {
+      const members = listApprovedMembers(quiz.groupId);
+      const nameByUid = new Map<string, string>();
+      try {
+        const snap = await dbAdmin.collection("users").get();
+        for (const doc of snap.docs) {
+          const data = doc.data() as { profile?: { name?: string } };
+          nameByUid.set(doc.id, data.profile?.name || doc.id);
+        }
+      } catch {
+        /* optional */
+      }
+      return members.map((m) => ({
+        uid: m.uid,
+        studentName: m.studentName || nameByUid.get(m.uid) || m.uid,
+      }));
+    }
 
-    let students: Array<{ uid: string; studentName: string }> = [];
     try {
       const snap = await dbAdmin.collection("users").get();
-      students = snap.docs.map((doc) => {
+      return snap.docs.map((doc) => {
         const data = doc.data() as { profile?: { name?: string } };
         return { uid: doc.id, studentName: data.profile?.name || doc.id };
       });
     } catch {
-      /* optional */
+      return [];
     }
+  }
 
+  async function refreshClassStats(quizId: string): Promise<ArticleQuizClassStats> {
+    const quiz = getQuiz(quizId);
+    if (!quiz) throw new Error("Quiz not found");
+
+    const students = await loadRosterStudents(quiz);
     const roster = getRoster(quizId, students);
     const submissions = listSubmissionsForQuiz(quizId);
     const scores = submissions.map((s) => s.score);
-    const maxScore = quiz.questions.length || 1;
+    const maxScore =
+      submissions[0]?.maxScore ||
+      quiz.questions.length ||
+      1;
     const averageScore = scores.length
       ? scores.reduce((a, b) => a + b, 0) / scores.length
       : 0;
+
+    const questionAccuracy = computeQuestionAccuracyFromSubmissions(quiz, submissions);
 
     const ai = await consolidateArticleQuizStats({
       title: quiz.title,
@@ -737,6 +878,16 @@ async function startServer() {
       unsubmittedNames: roster.unsubmitted.map((u) => u.studentName),
     });
 
+    // Prefer deterministic accuracy / common wrong answers; keep AI narrative fields.
+    const mergedAccuracy = questionAccuracy.map((qa) => {
+      const fromAi = (ai.questionAccuracy || []).find((a) => a.questionId === qa.questionId);
+      return {
+        ...qa,
+        commonWrongAnswer: qa.commonWrongAnswer || fromAi?.commonWrongAnswer,
+        commonWrongCount: qa.commonWrongCount,
+      };
+    });
+
     const stats: ArticleQuizClassStats = {
       quizId,
       totalStudents: roster.submitted.length + roster.unsubmitted.length,
@@ -746,8 +897,8 @@ async function startServer() {
       averagePercent: Math.round((averageScore / maxScore) * 100),
       highestScore: scores.length ? Math.max(...scores) : 0,
       lowestScore: scores.length ? Math.min(...scores) : 0,
-      questionAccuracy: ai.questionAccuracy || [],
-      aiSummary: ai.aiSummary || '',
+      questionAccuracy: mergedAccuracy,
+      aiSummary: ai.aiSummary || "",
       strengths: ai.strengths || [],
       weaknesses: ai.weaknesses || [],
       recommendations: ai.recommendations || [],
@@ -770,20 +921,7 @@ async function startServer() {
       const quiz = getQuiz(req.params.id);
       if (!quiz) return res.status(404).json({ error: "Quiz not found" });
 
-      let students: Array<{ uid: string; studentName: string }> = [];
-      try {
-        const snap = await dbAdmin.collection("users").get();
-        students = snap.docs.map((doc) => {
-          const data = doc.data() as { profile?: { name?: string } };
-          return {
-            uid: doc.id,
-            studentName: data.profile?.name || doc.id,
-          };
-        });
-      } catch (e) {
-        console.warn("Could not load users for roster; using submissions only.", e);
-      }
-
+      const students = await loadRosterStudents(quiz);
       res.json({ roster: getRoster(req.params.id, students) });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to load roster" });

@@ -100,6 +100,7 @@ const App: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentActiveSpellingSession, setCurrentActiveSpellingSession] = useState<SpellingSession | null>(null);
   const [xpPopupAmount, setXpPopupAmount] = useState<number | null>(null);
+  const [historyReviewQuizId, setHistoryReviewQuizId] = useState<string | null>(null);
 
   const showXpGain = (xp: number) => {
     if (xp > 0) setXpPopupAmount(xp);
@@ -327,7 +328,11 @@ const App: React.FC = () => {
     showXpGain(xpToAdd);
   };
 
-  const handleArticleQuizXp = (xp: number, label = 'Article Quiz') => {
+  const handleArticleQuizXp = (
+    xp: number,
+    label = 'Article Quiz',
+    meta?: { quizId?: string; score?: number; maxScore?: number },
+  ) => {
     if (xp <= 0) return;
     setUserStats(prev => {
       const newTotalXp = prev.totalXp + xp;
@@ -343,6 +348,9 @@ const App: React.FC = () => {
         type: 'Article',
         completedAt: Date.now(),
         xpEarned: xp,
+        quizId: meta?.quizId,
+        score: meta?.score,
+        maxScore: meta?.maxScore,
       };
       return {
         ...prev,
@@ -693,9 +701,10 @@ const App: React.FC = () => {
             onContinueSpelling={() => {}}
             onShowHistory={() => setView(AppView.HISTORY)}
             onStartOral={() => setView(AppView.ORAL_SELECTION)}
-            onStartArticleQuiz={() =>
-              setView(adminLoggedIn ? AppView.ARTICLE_QUIZ_ADMIN : AppView.ARTICLE_QUIZ_STUDENT)
-            }
+            onStartArticleQuiz={() => {
+              setHistoryReviewQuizId(null);
+              setView(adminLoggedIn ? AppView.ARTICLE_QUIZ_ADMIN : AppView.ARTICLE_QUIZ_STUDENT);
+            }}
             isAdmin={adminLoggedIn}
           />
         )}
@@ -703,7 +712,10 @@ const App: React.FC = () => {
         {view === AppView.ARTICLE_QUIZ_ADMIN && (
           <ArticleQuizAdmin
             onBack={() => setView(AppView.DASHBOARD)}
-            onOpenStudentView={() => setView(AppView.ARTICLE_QUIZ_STUDENT)}
+            onOpenStudentView={() => {
+              setHistoryReviewQuizId(null);
+              setView(AppView.ARTICLE_QUIZ_STUDENT);
+            }}
           />
         )}
 
@@ -711,8 +723,12 @@ const App: React.FC = () => {
           <ArticleQuizStudent
             uid={user.uid}
             studentName={userStats.profile?.name || 'Student'}
-            onBack={() => setView(AppView.DASHBOARD)}
+            onBack={() => {
+              setHistoryReviewQuizId(null);
+              setView(AppView.DASHBOARD);
+            }}
             onXpEarned={handleArticleQuizXp}
+            initialReviewQuizId={historyReviewQuizId}
           />
         )}
         
@@ -769,9 +785,14 @@ const App: React.FC = () => {
         )}
 
         {view === AppView.HISTORY && (
-          <HistoryView 
-            items={userStats.submissions || []} 
-            onBack={() => setView(AppView.DASHBOARD)} 
+          <HistoryView
+            items={userStats.submissions || []}
+            uid={user.uid}
+            onBack={() => setView(AppView.DASHBOARD)}
+            onReviewArticleQuiz={(quizId) => {
+              setHistoryReviewQuizId(quizId);
+              setView(AppView.ARTICLE_QUIZ_STUDENT);
+            }}
           />
         )}
 

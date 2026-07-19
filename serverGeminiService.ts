@@ -922,6 +922,8 @@ export async function generateArticleMcqs(options: {
   article: string;
   title?: string;
   questionCount?: number;
+  mcqCount?: number;
+  openCount?: number;
 }): Promise<{ title: string; questions: Array<{
   type: 'mcq' | 'open';
   prompt: string;
@@ -932,8 +934,12 @@ export async function generateArticleMcqs(options: {
 }> }> {
   return withRetry(async () => {
     const { article, title } = options;
-    // Always generate a fixed pool: 5 MCQ + 3 open-ended for admin selection.
-    void options.questionCount;
+    const mcqCount = Math.max(
+      1,
+      Math.min(10, Math.round(options.mcqCount ?? options.questionCount ?? 5)),
+    );
+    const openCount = Math.max(0, Math.min(8, Math.round(options.openCount ?? 3)));
+    const total = mcqCount + openCount;
 
     const response = await ai.models.generateContent({
       model: FLASH_MODEL,
@@ -947,9 +953,9 @@ Article:
 ${article.slice(0, 12000)}
 """
 
-Create EXACTLY 8 questions based ONLY on the article:
-1) Exactly 5 multiple-choice questions (type "mcq")
-2) Exactly 3 open-ended short-answer questions (type "open")
+Create EXACTLY ${total} questions based ONLY on the article:
+1) Exactly ${mcqCount} multiple-choice questions (type "mcq")
+2) Exactly ${openCount} open-ended short-answer questions (type "open")
 
 Rules for MCQ (type "mcq"):
 - Exactly 4 options.
@@ -967,7 +973,7 @@ Keep language clear for secondary students.
 
 Return JSON with:
 - title: a short quiz title
-- questions: array of 8 items in this order: 5 mcq then 3 open
+- questions: array of ${total} items in this order: ${mcqCount} mcq then ${openCount} open
   Each item: { type, prompt, options?, correctIndex?, explanation, suggestedAnswer? }`,
         }],
       },

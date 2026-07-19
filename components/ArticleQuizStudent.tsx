@@ -33,7 +33,13 @@ interface ArticleQuizStudentProps {
   uid: string;
   studentName: string;
   onBack: () => void;
-  onXpEarned: (xp: number, label?: string) => void;
+  onXpEarned: (
+    xp: number,
+    label?: string,
+    meta?: { quizId?: string; score?: number; maxScore?: number },
+  ) => void;
+  /** Open this quiz's review results immediately (from Learning History). */
+  initialReviewQuizId?: string | null;
 }
 
 type Phase = 'list' | 'read' | 'answer' | 'marking' | 'results';
@@ -43,9 +49,11 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
   studentName,
   onBack,
   onXpEarned,
+  initialReviewQuizId = null,
 }) => {
   const [quizzes, setQuizzes] = useState<ArticleQuiz[]>([]);
   const [group, setGroup] = useState<ArticleQuizGroup | null>(null);
+  const [pendingGroup, setPendingGroup] = useState<ArticleQuizGroup | null>(null);
   const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
   const [activeQuiz, setActiveQuiz] = useState<ArticleQuiz | null>(null);
   const [phase, setPhase] = useState<Phase>('list');
@@ -76,6 +84,7 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
       ]);
       setQuizzes(listed.quizzes);
       setGroup(listed.group ?? null);
+      setPendingGroup(listed.pendingGroup ?? null);
       setCompletedIds(new Set(done));
     } catch (e: any) {
       setError(e.message || 'Failed to load quizzes');
@@ -101,8 +110,16 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
     });
     setError('');
     setGroup(null);
+    setPendingGroup(null);
     refreshList();
   }, [uid]);
+
+  useEffect(() => {
+    if (initialReviewQuizId) {
+      openQuiz(initialReviewQuizId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialReviewQuizId, uid]);
 
   const handleJoinGroup = async () => {
     if (!joinCode.trim()) {
@@ -112,10 +129,18 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
     setJoining(true);
     setError('');
     try {
-      const joined = await joinArticleGroup(uid, joinCode.trim());
-      setGroup(joined);
+      const joined = await joinArticleGroup(uid, joinCode.trim(), studentName);
       setShowJoinModal(false);
       setJoinCode('');
+      if (joined.status === 'approved') {
+        setGroup(joined.group);
+        setPendingGroup(null);
+        setError('');
+      } else {
+        setGroup(null);
+        setPendingGroup(joined.group);
+        setError('');
+      }
       await refreshList();
     } catch (e: any) {
       setError(e.message || 'Failed to join group');
@@ -130,6 +155,7 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
     try {
       await leaveArticleGroup(uid);
       setGroup(null);
+      setPendingGroup(null);
       setQuizzes([]);
       setShowJoinModal(false);
     } catch (e: any) {
@@ -161,7 +187,7 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
         const quiz = await getArticleQuiz(id, true, uid);
         setActiveQuiz(quiz);
         setPhase('results');
-        setError('This account already completed this quiz. Only one attempt per account.');
+        setError('');
         return;
       }
 
@@ -211,7 +237,11 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
         correctOpenCount: xpAwarded.correctOpenCount,
       }));
       if (xpAwarded.totalXp > 0) {
-        onXpEarned(xpAwarded.totalXp, 'Article quiz complete');
+        onXpEarned(xpAwarded.totalXp, activeQuiz.title || 'Article quiz complete', {
+          quizId: activeQuiz.id,
+          score: submission.score,
+          maxScore: submission.maxScore,
+        });
       }
       setPhase('results');
     } catch (e: any) {
@@ -550,6 +580,10 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
           <p className="text-sm font-bold text-indigo-600">
             Group: {group.name} · Code {group.code}
           </p>
+        ) : pendingGroup ? (
+          <p className="text-sm font-bold text-amber-600">
+            Join request pending for {pendingGroup.name} ({pendingGroup.code}) — waiting for teacher approval.
+          </p>
         ) : (
           <p className="text-sm font-bold text-amber-600">
             Join a group with a code to see your quizzes.
@@ -573,7 +607,25 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
         </div>
       )}
 
-      {!loading && !group && (
+      {!loading && !group && pendingGroup && (
+        <div className="rounded-3xl border border-dashed border-amber-200 bg-amber-50/50 p-10 text-center space-y-4">
+          <p className="text-slate-700 font-black text-lg">Waiting for approval</p>
+          <p className="text-slate-600 font-medium max-w-md mx-auto">
+            Your request to join <b>{pendingGroup.name}</b> was sent to your teacher.
+            You will see quizzes here once they approve you.
+          </p>
+          <button
+            type="button"
+            disabled={joining}
+            onClick={handleLeaveGroup}
+            className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-600 hover:bg-slate-50"
+          >
+            Cancel request
+          </button>
+        </div>
+      )}
+
+      {!loading && !group && !pendingGroup && (
         <div className="rounded-3xl border border-dashed border-amber-200 bg-amber-50/50 p-10 text-center space-y-4">
           <p className="text-slate-600 font-medium">
             Ask your teacher for a group code, then tap Join Group.
@@ -601,23 +653,23 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
             <button
               key={q.id}
               type="button"
-              disabled={done}
               onClick={() => openQuiz(q.id)}
               className={`flex w-full items-center justify-between rounded-3xl border p-5 text-left shadow-sm transition-all ${
                 done
-                  ? 'cursor-not-allowed border-slate-100 bg-slate-50 opacity-70'
+                  ? 'border-emerald-100 bg-emerald-50/40 hover:border-emerald-300'
                   : 'border-slate-200 bg-white hover:border-indigo-300 hover:shadow-md'
               }`}
             >
               <div>
                 <p className="font-black text-slate-800">{q.title}</p>
                 <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  {q.questions.length} questions · {done ? 'Completed on this account' : 'One attempt / account'}
+                  {q.questions.length} questions ·{' '}
+                  {done ? 'Tap to review & revise' : 'One attempt / account'}
                 </p>
               </div>
               {done ? (
-                <span className="inline-flex items-center gap-2 rounded-xl bg-slate-200 px-4 py-2 text-xs font-black text-slate-500">
-                  <Lock size={14} /> Done
+                <span className="inline-flex items-center gap-2 rounded-xl bg-emerald-100 px-4 py-2 text-xs font-black text-emerald-700">
+                  <CheckCircle2 size={14} /> Review
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white">
@@ -645,7 +697,7 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
               </button>
             </div>
             <p className="text-sm text-slate-500">
-              Enter the code your teacher shared. You will only see quizzes for that group.
+              Enter the code your teacher shared. Your teacher must approve the request before you can see quizzes.
             </p>
             {group && (
               <p className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-600">
@@ -669,7 +721,7 @@ const ArticleQuizStudent: React.FC<ArticleQuizStudentProps> = ({
               className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 font-black text-white hover:bg-amber-600 disabled:opacity-60"
             >
               {joining ? <Loader2 className="animate-spin" size={18} /> : <Users size={18} />}
-              Join
+              Request to join
             </button>
             {group && (
               <button

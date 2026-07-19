@@ -39,6 +39,10 @@ export interface HistoryItem {
   type: 'Spelling' | 'Composition' | 'Oral' | 'Article';
   completedAt: number;
   xpEarned: number;
+  /** Article quiz id — enables review from Learning History. */
+  quizId?: string;
+  score?: number;
+  maxScore?: number;
 }
 
 export interface UserProfile {
@@ -161,10 +165,29 @@ export interface ArticleQuizGroup {
   createdAt: number;
 }
 
+export type GroupMembershipStatus = 'pending' | 'approved';
+
 export interface ArticleQuizGroupMembership {
   uid: string;
   groupId: string;
   joinedAt: number;
+  /** Legacy records without status are treated as approved. */
+  status?: GroupMembershipStatus;
+  studentName?: string;
+  requestedAt?: number;
+  reviewedAt?: number;
+}
+
+/** In-app alert for admins (e.g. join requests). */
+export interface AdminNotification {
+  id: string;
+  type: 'group_join_request';
+  groupId: string;
+  groupName: string;
+  uid: string;
+  studentName: string;
+  createdAt: number;
+  read: boolean;
 }
 
 export interface ArticleQuiz {
@@ -218,6 +241,8 @@ export interface ArticleQuizClassStats {
     prompt: string;
     correctRate: number;
     commonWrongAnswer?: string;
+    /** How many students gave that common wrong answer. */
+    commonWrongCount?: number;
   }>;
   aiSummary: string;
   strengths: string[];
